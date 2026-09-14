@@ -12,10 +12,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=joe
-WorkingDirectory=/home/joe/Code/onedrive-mcp
+User=your-username
+WorkingDirectory=/path/to/onedrive-mcp
 # Bind to localhost only; use a reverse proxy (with auth) for remote access.
-ExecStart=/home/joe/Code/onedrive-mcp/venv/bin/mcpo --host 127.0.0.1 --port 8765 -- /home/joe/Code/onedrive-mcp/venv/bin/python /home/joe/Code/onedrive-mcp/server.py
+ExecStart=/path/to/onedrive-mcp/venv/bin/mcpo --host 127.0.0.1 --port 8765 -- /path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/server.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

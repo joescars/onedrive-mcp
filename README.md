@@ -58,7 +58,7 @@ That's it — no client secret, no redirect URI, no admin consent needed.
 ## 2. Local setup
 
 ```bash
-cd /home/joe/Code/onedrive-mcp
+cd /path/to/onedrive-mcp
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 
@@ -117,8 +117,8 @@ Desktop's `mcpServers`):
 {
   "mcpServers": {
     "onedrive": {
-      "command": "/home/joe/Code/onedrive-mcp/venv/bin/python",
-      "args": ["/home/joe/Code/onedrive-mcp/server.py"]
+      "command": "/path/to/onedrive-mcp/venv/bin/python",
+      "args": ["/path/to/onedrive-mcp/server.py"]
     }
   }
 }
