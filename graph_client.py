@@ -172,13 +172,20 @@ def shape_drive_item(item: dict) -> dict:
 
 def shape_drive_item_full(item: dict) -> dict:
     """Fuller metadata shape used by get_item_metadata (keeps the clean
-    fields plus a few extras that are useful for a single-item lookup)."""
+    fields plus a few extras that are useful for a single-item lookup).
+
+    SECURITY: deliberately does NOT include @microsoft.graph.downloadUrl.
+    That URL is a short-lived, no-authentication-required link — possession
+    of it is equivalent to holding a file-scoped bearer token — and tool
+    results flow into agent transcripts/logs. download_file() reads it from
+    the raw Graph response internally and never exposes it. (SECURITY_REVIEW
+    finding N-M2.)
+    """
     base = shape_drive_item(item)
     base.update({
         "created": item.get("createdDateTime"),
         "mime_type": (item.get("file") or {}).get("mimeType"),
         "child_count": (item.get("folder") or {}).get("childCount"),
-        "download_url": item.get("@microsoft.graph.downloadUrl"),
     })
     return base
 

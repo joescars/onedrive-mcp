@@ -1,26 +1,39 @@
-[Unit]
-Description=mcpo bridge for onedrive-mcp (OpenAPI HTTP wrapper for Open WebUI)
-After=network.target
-
 # TEMPLATE — disabled by default. Copy to /etc/systemd/system/, edit the
-# paths/User/API key below to match your install, then:
+# paths/User below to match your install, then:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now onedrive-mcpo.service
 #
 # SECURITY: mcpo exposes an HTTP endpoint. It binds ALL interfaces with NO
-# authentication unless you set --host and --api-key explicitly (both are
-# set below — do not remove them). Binding to 127.0.0.1 alone does not
+# authentication unless a host bind and an API key are set explicitly (both
+# are done below — do not remove them). Binding to 127.0.0.1 alone does not
 # isolate the endpoint from other local accounts on this machine; the API
-# key is what actually restricts access. Generate one with:
-#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# key is what actually restricts access.
+#
+# The API key must NEVER appear in this unit's ExecStart or in any
+# command line: anything in argv is readable by all local users via `ps`
+# and `/proc/PID/cmdline`, and ExecStart lines are readable by
+# unprivileged users via `systemctl cat`. Instead the key lives in a 0600
+# env file and scripts/run_mcp_bridge.py loads it into the process
+# environment only. Create it once:
+#   sudo install -m 600 -o your-username -g your-username /dev/null /etc/onedrive-mcpo.env
+#   printf 'MCPO_API_KEY=%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+#       | sudo tee /etc/onedrive-mcpo.env >/dev/null
+#   # optional overrides (defaults shown): MCPO_HOST=127.0.0.1  MCPO_PORT=8765
+
+[Unit]
+Description=mcpo bridge for onedrive-mcp (OpenAPI HTTP wrapper for Open WebUI)
+After=network.target
 
 [Service]
 Type=simple
 User=your-username
 WorkingDirectory=/path/to/onedrive-mcp
-# Bind to localhost only; use a reverse proxy (with auth) for remote access.
-# Replace REPLACE_WITH_RANDOM_API_KEY below before enabling this unit.
-ExecStart=/path/to/onedrive-mcp/venv/bin/mcpo --host 127.0.0.1 --port 8765 --api-key "REPLACE_WITH_RANDOM_API_KEY" -- /path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/server.py
+EnvironmentFile=/etc/onedrive-mcpo.env
+# Bind to localhost only (MCPO_HOST override in the env file if needed);
+# use a reverse proxy (with auth) for remote access. No secrets in argv:
+# run_mcp_bridge.py reads MCPO_API_KEY from the environment and passes it
+# to mcpo in-process.
+ExecStart=/path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/scripts/run_mcp_bridge.py /etc/onedrive-mcpo.env
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

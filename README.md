@@ -134,46 +134,69 @@ Open WebUI's "Tool Server" feature speaks OpenAPI/HTTP, not raw MCP-stdio.
 Bridge with [`mcpo`](https://github.com/open-webui/mcpo):
 
 ```bash
-# install mcpo (either into this project's venv, or globally with pipx)
+# install mcpo into this project's venv (it must be importable by the
+# same interpreter that runs the bridge launcher below)
 ./venv/bin/pip install mcpo
-# or: pipx install mcpo
-
-# run the bridge — bind to localhost, and ALWAYS set an API key (see
-# Security note below; mcpo defaults to binding 0.0.0.0 with NO auth if
-# you omit --host / --api-key)
-./venv/bin/mcpo --host 127.0.0.1 --port 8765 --api-key "<generate-a-random-secret>" -- ./venv/bin/python server.py
 ```
 
-Generate a random API key rather than typing one, e.g.:
+**Generate the API key into a 0600 env file — do not type it into a
+command line.** Anything passed as a shell argument is visible to every
+local user via `ps` / `/proc/PID/cmdline` and stays in your shell history:
+
 ```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+umask 077
+cat > .mcpo.env <<EOF
+MCPO_API_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+# MCPO_HOST=127.0.0.1
+# MCPO_PORT=8765
+EOF
+chmod 600 .mcpo.env
 ```
+
+Then start the bridge with the included launcher:
+
+```bash
+./venv/bin/python scripts/run_mcp_bridge.py .mcpo.env
+```
+
+`run_mcp_bridge.py` calls mcpo's `run()` in-process with the key taken
+from the env file, so **the key never appears in any argv** (mcpo's own
+CLI only accepts `--api-key` as a command-line argument, which is why this
+launcher exists). It also refuses to start if the env file is
+group/world-readable or the key is unset.
 
 Then in Open WebUI: **Settings → Tools → Add Tool Server** → OpenAPI URL
 `http://<server-host>:8765` (use `http://127.0.0.1:8765` if Open WebUI runs
 on the same host, or your private network address otherwise), and paste the
-same API key into Open WebUI's "API Key" field for this tool server.
+same API key (from `.mcpo.env`) into Open WebUI's "API Key" field for this
+tool server.
 
 **Security note**: `mcpo` defaults to binding `0.0.0.0` (all network
-interfaces) with **no authentication at all** unless you pass `--api-key`.
-This project's example command above always sets both `--host 127.0.0.1`
-and `--api-key` — treat both as required, not optional:
-- **Always pass `--api-key`.** Without one, anyone who can reach the port —
-  including any other local account on a shared/multi-user host, not just
-  remote network attackers — can search and download your entire OneDrive
-  through the HTTP endpoint with zero authentication.
+interfaces) with **no authentication at all** unless you set an API key.
+The launcher above always binds `127.0.0.1` and requires a key — treat
+both as required, not optional:
+- **Always set `MCPO_API_KEY`.** Without one, anyone who can reach the
+  port — including any other local account on a shared/multi-user host,
+  not just remote network attackers — can search and download your entire
+  OneDrive through the HTTP endpoint with zero authentication.
 - **Binding to `127.0.0.1` does NOT isolate the endpoint from other local
   users on the same machine.** Loopback-bound ports are reachable by any
   process running as any account on that host. The API key, not the bind
   address, is what actually restricts access.
-- If you need remote access (Open WebUI on a different host), bind to a
-  private/internal interface only, or put it behind your existing reverse
-  proxy (nginx/Caddy/Traefik) with its own authentication, and never expose
-  the port directly to the internet — but keep `--api-key` set regardless.
+- **Never put the key in a command line** (`--api-key "..."` in a shell,
+  or inline in a systemd `ExecStart`): argv is world-readable. Use the
+  env-file pattern above; the launcher passes the key in-process.
+- If you need remote access (Open WebUI on a different host), set
+  `MCPO_HOST` to a private/internal interface only, or put the bridge
+  behind your existing reverse proxy (nginx/Caddy/Traefik) with its own
+  authentication, and never expose the port directly to the internet —
+  but keep the API key set regardless.
 
-A ready-to-edit systemd unit template for running the `mcpo` bridge
+A ready-to-edit systemd unit template for running the bridge
 persistently is provided at `deploy/onedrive-mcpo.service` (disabled by
-default — copy, edit paths/user, then enable it yourself).
+default — it uses a root-owned `0600` `/etc/onedrive-mcpo.env` via
+`EnvironmentFile=` plus the same key-free launcher; copy, edit paths/user,
+then enable it yourself).
 
 ```bash
 sudo cp deploy/onedrive-mcpo.service /etc/systemd/system/

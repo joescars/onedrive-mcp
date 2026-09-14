@@ -1,5 +1,6 @@
 .env
 token_cache.bin
+.mcpo.env
 venv/
 .venv/
 __pycache__/

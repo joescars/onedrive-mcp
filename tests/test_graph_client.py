@@ -120,8 +120,11 @@ def test_shape_drive_item_full_includes_extra_fields():
     shaped = shape_drive_item_full(FILE_ITEM)
     assert shaped["mime_type"] == "application/pdf"
     assert shaped["created"] == "2023-12-01T00:00:00Z"
-    assert shaped["download_url"] == "https://download.example/foo.pdf"
     assert shaped["child_count"] is None
+    # N-M2 regression: the pre-authenticated Graph downloadUrl is a
+    # no-auth, file-bearing URL — it must NEVER appear in tool output.
+    assert "download_url" not in shaped
+    assert "@microsoft.graph.downloadUrl" not in shaped
 
 
 def test_shape_drive_item_full_folder_child_count():
@@ -182,6 +185,23 @@ def test_get_item_metadata_not_found_raises_clean_error():
     )
     with pytest.raises(graph_client.GraphNotFoundError):
         graph_client.get_item_metadata("/missing.pdf")
+
+
+@responses_lib.activate
+def test_get_item_metadata_never_exposes_download_url():
+    """N-M2: even when Graph returns @microsoft.graph.downloadUrl, the
+    tool-visible metadata must not contain it (possession == bearer)."""
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf",
+        json=dict(FILE_ITEM, **{"@microsoft.graph.downloadUrl": "https://cdn.example/secret-tokenized-url"}),
+        status=200,
+    )
+    shaped = graph_client.get_item_metadata("/foo.pdf")
+    flat = str(shaped)
+    assert "download_url" not in shaped
+    assert "cdn.example" not in flat
+    assert "secret-tokenized-url" not in flat
 
 
 @responses_lib.activate

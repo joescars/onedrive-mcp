@@ -90,7 +90,9 @@ def get_item_metadata(path_or_id: str) -> dict:
                     Graph drive item id.
 
     Returns {name, id, path, size, last_modified, is_folder, web_url,
-    created, mime_type, child_count, download_url}.
+    created, mime_type, child_count}. The pre-authenticated Graph
+    downloadUrl is intentionally NOT returned (see SECURITY_REVIEW N-M2) —
+    use download_file() to fetch content.
     """
     try:
         return graph_client.get_item_metadata(path_or_id)
