@@ -8,3 +8,4 @@ __pycache__/
 downloads/
 .pytest_cache/
 *.egg-info/
+SECURITY_REVIEW.md
