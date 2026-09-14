@@ -4,10 +4,12 @@ No real network calls — Graph HTTP responses are mocked with `responses`.
 """
 import sys
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+import requests
 import responses as responses_lib
 
 import graph_client
@@ -283,3 +285,159 @@ def test_download_file_raises_on_size_mismatch(tmp_path):
     download_dir = tmp_path / "downloads"
     with pytest.raises(graph_client.GraphError, match="size mismatch"):
         graph_client.download_file("/foo.pdf", download_dir)
+
+
+# ---------------------------------------------------------------------------
+# N-L3: Retry-After HTTP-date parsing
+# ---------------------------------------------------------------------------
+
+def test_parse_retry_after_accepts_seconds():
+    assert graph_client._parse_retry_after("0") == 0.0
+    assert graph_client._parse_retry_after("5") == 5.0
+
+
+def test_parse_retry_after_accepts_http_date():
+    # RFC 9110 permits an HTTP-date; Graph sends this form.
+    v = graph_client._parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT")
+    assert 0.0 <= v <= 30.0  # a wall-clock date far in the past clamps to 0
+
+
+def test_parse_retry_after_does_not_crash_on_garbage():
+    assert graph_client._parse_retry_after("not-a-number") == 2.0
+    assert graph_client._parse_retry_after("") == 2.0
+    assert graph_client._parse_retry_after(None) == 2.0
+
+
+@responses_lib.activate
+def test_throttling_retries_with_http_date_retry_after(monkeypatch):
+    monkeypatch.setattr(graph_client.time, "sleep", lambda _s: None)
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive",
+        json={"error": {"message": "throttled"}},
+        status=429,
+        headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"},
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive",
+        json={"id": "drive1", "quota": {}},
+        status=200,
+    )
+    info = graph_client.get_drive_info()
+    assert info["drive_id"] == "drive1"
+
+
+# ---------------------------------------------------------------------------
+# N-L4: URL-segment encoding — '?', '#', and '..' must not shift the endpoint
+# ---------------------------------------------------------------------------
+
+def test_build_item_url_encodes_query_and_fragment():
+    # '?' must not become a query-string separator; '#' must stay a path char.
+    url = graph_client.build_item_url_from_path("/foo?x=/bar")
+    assert "?" not in url
+    assert "%3F" in url
+    url2 = graph_client.build_item_url_from_path("/foo#frag")
+    assert "%23" in url2
+
+
+def test_path_dot_segments_are_rejected():
+    with pytest.raises(graph_client.GraphError, match="dot-segment"):
+        graph_client.build_item_url_from_path("/foo/../../etc/passwd")
+    with pytest.raises(graph_client.GraphError, match="dot-segment"):
+        graph_client.resolve_item_url("/a/../b")
+
+
+def test_item_id_dot_segments_are_encoded_not_normalized():
+    # A crafted 'id' like ../../users must be percent-encoded so requests
+    # does not collapse it into a different Graph endpoint.
+    url = graph_client.build_item_url_from_id("../../users")
+    assert "/me/drive/items/../../users" not in url
+    assert "%2F" in url  # slashes are encoded, so no dot-segment remains
+    # and it does not resolve to /v1.0/me/users:
+    prepared = requests.Request("GET", url).prepare()
+    assert "/me/users" not in prepared.path_url
+
+
+def test_search_query_encodes_path_chars():
+    # '/' inside the OData query must be encoded so the search endpoint
+    # can't be shifted by dot-segments.
+    built = []
+    def _capture(url, **kw):
+        built.append(url)
+        return {"value": []}
+    with mock.patch.object(graph_client, "_get_json", side_effect=_capture):
+        graph_client.search_items("a/../../b")
+    assert built and "/search(q='a/../../b')" not in built[0]
+
+
+# ---------------------------------------------------------------------------
+# N-L1 / N-L2: downloads are created owner-only and never overwrite
+# ---------------------------------------------------------------------------
+
+@responses_lib.activate
+def test_download_created_owner_only_at_creation(tmp_path):
+    import stat as stat_mod
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf",
+        json=dict(FILE_ITEM, size=5, **{"@microsoft.graph.downloadUrl": None}),
+        status=200,
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        body=b"hello",
+        status=200,
+    )
+    # Use a restrictive umask to prove the file mode does not inherit it —
+    # it is opened with 0600 explicitly, so the mode is owner-only even
+    # immediately (no post-stream chmod window).
+    result = graph_client.download_file("/foo.pdf", tmp_path / "d")
+    m = stat_mod.S_IMODE(Path(result["local_path"]).stat().st_mode)
+    assert m == (stat_mod.S_IRUSR | stat_mod.S_IWUSR)
+
+
+@responses_lib.activate
+def test_download_refuses_to_overwrite_existing(tmp_path):
+    download_dir = tmp_path / "d"
+    download_dir.mkdir()
+    victim = download_dir / "important.txt"
+    victim.write_text("ORIGINAL CONTENT")
+    victim.chmod(0o600)
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf",
+        json=dict(FILE_ITEM, **{"@microsoft.graph.downloadUrl": None}),
+        status=200,
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        body=b"HELLO",
+        status=200,
+    )
+    with pytest.raises(graph_client.GraphError, match="already exists"):
+        graph_client.download_file("/foo.pdf", download_dir, dest_filename="important.txt")
+    # The original file must be untouched.
+    assert victim.read_text() == "ORIGINAL CONTENT"
+    assert victim.stat().st_mode & 0o777 == 0o600
+
+
+@responses_lib.activate
+def test_download_rejects_empty_and_nested_dest_filename(tmp_path):
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf",
+        json=dict(FILE_ITEM, **{"@microsoft.graph.downloadUrl": None}),
+        status=200,
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        body=b"x",
+        status=200,
+    )
+    for bad in ("", "/", "..", ".", "sub/dir.pdf", ".hidden/../x"):
+        with pytest.raises(graph_client.GraphError, match="Invalid destination"):
+            graph_client.download_file("/foo.pdf", tmp_path / "d", dest_filename=bad)

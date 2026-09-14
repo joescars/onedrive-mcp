@@ -108,12 +108,15 @@ def download_file(path_or_id: str, dest_filename: Optional[str] = None) -> dict:
     Args:
         path_or_id: Human path (e.g. '/Documents/foo.pdf') or Graph item id
                     of the FILE to download.
-        dest_filename: Optional local filename to save as (defaults to the
-                       OneDrive file's own name). Saved under DOWNLOAD_DIR.
+        dest_filename: Optional bare local filename to save as (defaults to
+                       the OneDrive file's own name). Saved under DOWNLOAD_DIR.
+                       Must be a plain file name (no path separators) and must
+                       not already exist — an existing destination raises an
+                       error instead of being silently overwritten.
 
     Returns {local_path, size_bytes, mime_type, source_name}. The file is
-    always saved to disk; base64 content is not returned to keep responses
-    small and to safely handle large files.
+    always saved to disk (owner-only permissions); base64 content is not
+    returned to keep responses small and to safely handle large files.
     """
     try:
         return graph_client.download_file(path_or_id, _download_dir(), dest_filename)

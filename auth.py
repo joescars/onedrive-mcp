@@ -96,8 +96,14 @@ def _save_cache(cache: msal.SerializableTokenCache) -> None:
         return
     cache_path = get_token_cache_path()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(cache.serialize())
-    # Restrict permissions to the owner only (best-effort "at minimum chmod 600").
+    # Create with restrictive mode from the start (N-L1): with write_text the
+    # file is briefly created at 0664 (umask) before the chmod below, leaving
+    # a window where other local accounts (group/world) could read the
+    # serialized refresh token. os.open with 0600 closes that window.
+    fd = os.open(cache_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w") as f:
+        f.write(cache.serialize())
+    # Best-effort: guarantee owner-only even if an existing file had looser mode.
     try:
         os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:

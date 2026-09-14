@@ -11,10 +11,12 @@ of a write call.
 """
 from __future__ import annotations
 
+import email.utils
 import mimetypes
 import os
 import stat
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +35,26 @@ class GraphError(RuntimeError):
 
 class GraphNotFoundError(GraphError):
     """Item not found (HTTP 404)."""
+
+
+def _parse_retry_after(value: Optional[str]) -> float:
+    """Parse a Retry-After header, which RFC 9110 allows as either delta
+    seconds or an HTTP-date (Graph sends the date form). Clamped to [0, 30].
+    Any unparseable value falls back to 2s — never crashes the 429 handler.
+    """
+    if not value:
+        return 2.0
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        # HTTP-date form, e.g. "Wed, 21 Oct 2015 07:28:00 GMT"
+        try:
+            then = email.utils.parsedate_to_datetime(value)
+            seconds = (then.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            return 2.0
+    return max(0.0, min(seconds, 30.0))
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +91,7 @@ def _get(url: str, *, params: Optional[dict] = None, stream: bool = False,
                 "Microsoft Graph is throttling requests (HTTP 429) and the "
                 "retry budget was exhausted. Please try again shortly."
             )
-        retry_after = float(resp.headers.get("Retry-After", "2"))
-        time.sleep(min(retry_after, 30))
+        time.sleep(_parse_retry_after(resp.headers.get("Retry-After")))
         return _get(url, params=params, stream=stream, _retry_count=_retry_count + 1)
 
     if resp.status_code == 404:
@@ -120,6 +141,42 @@ def _is_probably_item_id(value: str) -> bool:
     return True
 
 
+def _quote_graph_path(path: str) -> str:
+    """Percent-encode a Graph drive path for use in colon-path addressing,
+    keeping '/' (and ':') as they are valid path separators, while encoding
+    reserved URL characters (?, #, %, ...) and rejecting dot-segments.
+
+    SECURITY (N-L4): without this, raw path text is interpolated into the
+    URL. A '?' or '#' shifts the URL to query/fragment, and a '..' segment
+    is collapsed by the client (requests) into a different Graph endpoint
+    (e.g. path_or_id='../../users' normalizes from /me/drive/items/... to
+    /v1.0/me/users). Encoding blocks both: '?'/'#' become %-escaped, and a
+    ..-segment anywhere in the path raises instead of escaping the drive
+    addressing.
+    """
+    if path in ("", "/", "root"):
+        return path
+    segments = path.split("/")
+    out: list[str] = []
+    for seg in segments:
+        if seg in (".", ".."):
+            raise GraphError(
+                "Invalid OneDrive path: dot-segment traversal is not allowed "
+                f"(got {seg!r})."
+            )
+        out.append(requests.utils.quote(seg, safe=":"))
+    return "/".join(out)
+
+
+def _quote_graph_id(item_id: str) -> str:
+    """Percent-encode a raw Graph item id, so URL-reserved characters in a
+    caller-supplied id ('/', '?', '#', '..') cannot change which endpoint
+    is hit (N-L4). Real ids (e.g. '977892149CC23DE6!s8a...') pass through
+    unchanged; encoded dots/slashes have no dot-segment meaning on the wire.
+    """
+    return requests.utils.quote(item_id, safe="")
+
+
 def build_item_url_from_path(path: str) -> str:
     """Build a /me/drive/root:{path} style Graph URL from a human path."""
     path = path.strip()
@@ -127,11 +184,11 @@ def build_item_url_from_path(path: str) -> str:
         return f"{GRAPH_BASE}/me/drive/root"
     clean = path if path.startswith("/") else f"/{path}"
     # Graph's colon-path addressing: /me/drive/root:/Documents/foo.pdf
-    return f"{GRAPH_BASE}/me/drive/root:{clean}"
+    return f"{GRAPH_BASE}/me/drive/root:{_quote_graph_path(clean)}"
 
 
 def build_item_url_from_id(item_id: str) -> str:
-    return f"{GRAPH_BASE}/me/drive/items/{item_id}"
+    return f"{GRAPH_BASE}/me/drive/items/{_quote_graph_id(item_id)}"
 
 
 def resolve_item_url(path_or_id: str) -> str:
@@ -195,7 +252,10 @@ def shape_drive_item_full(item: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def search_items(query: str, top: int = 20) -> list[dict]:
-    url = f"{GRAPH_BASE}/me/drive/root/search(q='{requests.utils.quote(query)}')"
+    # safe="" percent-encodes '/' and '?' inside the OData query so a
+    # crafted search term cannot shift the search(q='...') endpoint or
+    # become a query string (N-L4).
+    url = f"{GRAPH_BASE}/me/drive/root/search(q='{requests.utils.quote(query, safe='')}')"
     data = _get_json(url, params={"$top": top})
     items = data.get("value", [])
     return [shape_drive_item(i) for i in items[:top]]
@@ -211,7 +271,7 @@ def list_folder(path: str = "/", top: int = 50) -> dict:
         children_url = f"{build_item_url_from_id(path)}/children"
     else:
         clean = path if path.startswith("/") else f"/{path}"
-        children_url = f"{GRAPH_BASE}/me/drive/root:{clean}:/children"
+        children_url = f"{GRAPH_BASE}/me/drive/root:{_quote_graph_path(clean)}:/children"
 
     data = _get_json(children_url, params={"$top": top})
     items = data.get("value", [])
@@ -242,6 +302,13 @@ def get_drive_info() -> dict:
     }
 
 
+def _valid_dest_name(name: str) -> bool:
+    """True only for a bare, non-empty file name that stays inside the
+    download directory (N-L2): no path separators, no dot-segments."""
+    name = (name or "").strip()
+    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+
+
 def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[str] = None) -> dict:
     """Downloads a file's content (read-only) and saves it under download_dir.
 
@@ -256,7 +323,24 @@ def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[s
     if item.get("folder") is not None:
         raise GraphError(f"'{path_or_id}' is a folder, not a file — cannot download.")
 
-    name = dest_filename or item.get("name") or "downloaded_file"
+    # N-L2: an empty name would resolve to the download directory itself
+    # (passing the old guard's exception clause and then failing with
+    # IsADirectoryError), and sub-paths like "sub/dir.pdf" would need
+    # directories the code never creates. Reject both up front — and
+    # reject an explicitly-provided empty/odd dest_filename even though it
+    # would otherwise fall through to the item's real name.
+    if dest_filename is not None and not _valid_dest_name(dest_filename):
+        raise GraphError(
+            f"Invalid destination filename {dest_filename!r}: must be a bare "
+            "file name with no path separators."
+        )
+    name = (dest_filename or item.get("name") or "downloaded_file").strip()
+    if not _valid_dest_name(name):
+        raise GraphError(
+            f"Invalid destination filename {name!r}: must be a bare file name "
+            "with no path separators."
+        )
+
     download_dir.mkdir(parents=True, exist_ok=True)
     # Restrict the downloads directory to the owner only — downloaded
     # content can include personal documents and should not inherit the
@@ -267,9 +351,19 @@ def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[s
     except OSError:
         pass
     dest_path = (download_dir / name).resolve()
-    # Guard against path traversal via a crafted dest_filename.
-    if download_dir.resolve() not in dest_path.parents and dest_path != download_dir.resolve():
+    # Guard against path traversal via a crafted dest_filename (N-L2/L2
+    # hardening): the resolved destination must live strictly inside the
+    # download directory — not an escape, not the directory itself.
+    if download_dir.resolve() not in dest_path.parents:
         raise GraphError("Invalid destination filename.")
+    # Refuse to silently clobber an existing file (N-L2) — otherwise a
+    # re-download (or a crafted name colliding with a prior document) would
+    # overwrite real personal data without warning.
+    if dest_path.exists():
+        raise GraphError(
+            f"A file named '{name}' already exists in {download_dir}. "
+            "Choose a different dest_filename to avoid overwriting it."
+        )
 
     direct_url = item.get("@microsoft.graph.downloadUrl")
     if direct_url:
@@ -285,14 +379,17 @@ def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[s
         resp = _get(content_url, stream=True)
 
     total = 0
-    with open(dest_path, "wb") as f:
+    # N-L1: create with owner-only mode from the start, so the file is never
+    # group/world-readable during the stream (previously open() created it at
+    # 0664-umask until the chmod after the transfer finished).
+    fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "wb") as f:
         for chunk in resp.iter_content(chunk_size=1024 * 256):
             if chunk:
                 f.write(chunk)
                 total += len(chunk)
 
-    # Restrict the downloaded file to the owner only — same reasoning as
-    # the downloads directory chmod above. Best-effort.
+    # Best-effort: guarantee owner-only even if the FS ignored the mode.
     try:
         os.chmod(dest_path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
