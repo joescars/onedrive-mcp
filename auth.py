@@ -20,9 +20,16 @@ from typing import Optional
 import msal
 from dotenv import load_dotenv
 
+# This project's root directory (where .env, token_cache.bin, downloads/
+# live). Resolved from this file's own location, NOT from the process's
+# current working directory — MCP clients (e.g. Hermes) commonly launch this
+# server with an unrelated cwd (their own install dir), so relying on cwd
+# silently breaks .env discovery and any relative default paths.
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 # Load .env once at import time so both the server and the CLI scripts share
-# the same configuration source.
-load_dotenv()
+# the same configuration source, regardless of the launching process's cwd.
+load_dotenv(PROJECT_ROOT / ".env")
 
 AUTHORITY_BASE = "https://login.microsoftonline.com"
 
@@ -57,7 +64,12 @@ def get_authority() -> str:
 
 def get_token_cache_path() -> Path:
     raw = os.environ.get("TOKEN_CACHE_PATH", "./token_cache.bin")
-    return Path(raw).expanduser().resolve()
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        # Resolve relative paths against the project root, not the launching
+        # process's cwd (see PROJECT_ROOT comment above).
+        path = PROJECT_ROOT / path
+    return path.resolve()
 
 
 def _load_cache() -> msal.SerializableTokenCache:

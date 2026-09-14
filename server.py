@@ -22,14 +22,20 @@ from mcp.server.fastmcp import FastMCP
 import graph_client
 from graph_client import GraphError, GraphNotFoundError
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 mcp = FastMCP("onedrive-readonly")
 
 
 def _download_dir() -> Path:
     raw = os.environ.get("DOWNLOAD_DIR", "./downloads")
-    return Path(raw).expanduser().resolve()
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        # Resolve relative to this file's directory, not the launching
+        # process's cwd (Hermes/other MCP hosts often launch with an
+        # unrelated cwd — see auth.py's PROJECT_ROOT for the same fix).
+        path = Path(__file__).resolve().parent / path
+    return path.resolve()
 
 
 def _friendly_error(exc: Exception) -> dict:
