@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import stat
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -250,6 +251,14 @@ def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[s
 
     name = dest_filename or item.get("name") or "downloaded_file"
     download_dir.mkdir(parents=True, exist_ok=True)
+    # Restrict the downloads directory to the owner only — downloaded
+    # content can include personal documents and should not inherit the
+    # process umask (which may leave it group/world-readable on a shared
+    # host). Best-effort: don't fail the download if chmod isn't permitted.
+    try:
+        os.chmod(download_dir, stat.S_IRWXU)
+    except OSError:
+        pass
     dest_path = (download_dir / name).resolve()
     # Guard against path traversal via a crafted dest_filename.
     if download_dir.resolve() not in dest_path.parents and dest_path != download_dir.resolve():
@@ -274,6 +283,22 @@ def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[s
             if chunk:
                 f.write(chunk)
                 total += len(chunk)
+
+    # Restrict the downloaded file to the owner only — same reasoning as
+    # the downloads directory chmod above. Best-effort.
+    try:
+        os.chmod(dest_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+    expected_size = item.get("size")
+    if expected_size is not None and total != expected_size:
+        raise GraphError(
+            f"Download size mismatch for '{name}': expected {expected_size} "
+            f"bytes from OneDrive metadata but wrote {total} bytes. The file "
+            "may be truncated or corrupted — it was still saved to "
+            f"{dest_path}, but re-download before trusting its contents."
+        )
 
     mime_type = (item.get("file") or {}).get("mimeType") or mimetypes.guess_type(name)[0] or "application/octet-stream"
 

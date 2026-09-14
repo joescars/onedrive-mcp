@@ -214,3 +214,52 @@ def test_forbidden_raises_clean_permission_error():
     )
     with pytest.raises(graph_client.GraphError, match="Files.Read"):
         graph_client.get_drive_info()
+
+
+# ---------------------------------------------------------------------------
+# download_file: permissions hardening + size-mismatch detection
+# ---------------------------------------------------------------------------
+
+@responses_lib.activate
+def test_download_file_chmods_dir_and_file_owner_only(tmp_path):
+    import stat as stat_mod
+
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf",
+        json=dict(FILE_ITEM, size=5, **{"@microsoft.graph.downloadUrl": None}),
+        status=200,
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        body=b"hello",
+        status=200,
+    )
+    download_dir = tmp_path / "downloads"
+    result = graph_client.download_file("/foo.pdf", download_dir)
+
+    dir_mode = stat_mod.S_IMODE(download_dir.stat().st_mode)
+    file_mode = stat_mod.S_IMODE(Path(result["local_path"]).stat().st_mode)
+    assert dir_mode == stat_mod.S_IRWXU  # 0o700, owner only
+    assert file_mode == (stat_mod.S_IRUSR | stat_mod.S_IWUSR)  # 0o600, owner only
+    assert result["size_bytes"] == 5
+
+
+@responses_lib.activate
+def test_download_file_raises_on_size_mismatch(tmp_path):
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf",
+        json=dict(FILE_ITEM, size=9999, **{"@microsoft.graph.downloadUrl": None}),
+        status=200,
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        body=b"short",
+        status=200,
+    )
+    download_dir = tmp_path / "downloads"
+    with pytest.raises(graph_client.GraphError, match="size mismatch"):
+        graph_client.download_file("/foo.pdf", download_dir)

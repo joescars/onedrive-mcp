@@ -138,21 +138,38 @@ Bridge with [`mcpo`](https://github.com/open-webui/mcpo):
 ./venv/bin/pip install mcpo
 # or: pipx install mcpo
 
-# run the bridge — bind to localhost only unless you have a reverse proxy
-# with auth in front of it (see Security note below)
-./venv/bin/mcpo --host 127.0.0.1 --port 8765 -- ./venv/bin/python server.py
+# run the bridge — bind to localhost, and ALWAYS set an API key (see
+# Security note below; mcpo defaults to binding 0.0.0.0 with NO auth if
+# you omit --host / --api-key)
+./venv/bin/mcpo --host 127.0.0.1 --port 8765 --api-key "<generate-a-random-secret>" -- ./venv/bin/python server.py
+```
+
+Generate a random API key rather than typing one, e.g.:
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 Then in Open WebUI: **Settings → Tools → Add Tool Server** → OpenAPI URL
 `http://<server-host>:8765` (use `http://127.0.0.1:8765` if Open WebUI runs
-on the same host, or your private network address otherwise).
+on the same host, or your private network address otherwise), and paste the
+same API key into Open WebUI's "API Key" field for this tool server.
 
-**Security note**: `mcpo` exposes an HTTP endpoint with no auth of its own
-by default. Recommended:
-- Bind to `127.0.0.1` (as above) if Open WebUI runs on the same host, or
-- Bind to a private/internal network interface only, or
-- Put it behind your existing reverse proxy (nginx/Caddy/Traefik) with
-  authentication, and do not expose port 8765 directly to the internet.
+**Security note**: `mcpo` defaults to binding `0.0.0.0` (all network
+interfaces) with **no authentication at all** unless you pass `--api-key`.
+This project's example command above always sets both `--host 127.0.0.1`
+and `--api-key` — treat both as required, not optional:
+- **Always pass `--api-key`.** Without one, anyone who can reach the port —
+  including any other local account on a shared/multi-user host, not just
+  remote network attackers — can search and download your entire OneDrive
+  through the HTTP endpoint with zero authentication.
+- **Binding to `127.0.0.1` does NOT isolate the endpoint from other local
+  users on the same machine.** Loopback-bound ports are reachable by any
+  process running as any account on that host. The API key, not the bind
+  address, is what actually restricts access.
+- If you need remote access (Open WebUI on a different host), bind to a
+  private/internal interface only, or put it behind your existing reverse
+  proxy (nginx/Caddy/Traefik) with its own authentication, and never expose
+  the port directly to the internet — but keep `--api-key` set regardless.
 
 A ready-to-edit systemd unit template for running the `mcpo` bridge
 persistently is provided at `deploy/onedrive-mcpo.service` (disabled by

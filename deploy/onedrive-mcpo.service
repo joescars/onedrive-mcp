@@ -3,23 +3,36 @@ Description=mcpo bridge for onedrive-mcp (OpenAPI HTTP wrapper for Open WebUI)
 After=network.target
 
 # TEMPLATE — disabled by default. Copy to /etc/systemd/system/, edit the
-# paths/User below to match your install, then:
+# paths/User/API key below to match your install, then:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now onedrive-mcpo.service
 #
-# SECURITY: mcpo exposes an HTTP endpoint. Bind it to localhost or a private
-# interface (as below) unless it's behind an authenticating reverse proxy.
+# SECURITY: mcpo exposes an HTTP endpoint. It binds ALL interfaces with NO
+# authentication unless you set --host and --api-key explicitly (both are
+# set below — do not remove them). Binding to 127.0.0.1 alone does not
+# isolate the endpoint from other local accounts on this machine; the API
+# key is what actually restricts access. Generate one with:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 [Service]
 Type=simple
 User=your-username
 WorkingDirectory=/path/to/onedrive-mcp
 # Bind to localhost only; use a reverse proxy (with auth) for remote access.
-ExecStart=/path/to/onedrive-mcp/venv/bin/mcpo --host 127.0.0.1 --port 8765 -- /path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/server.py
+# Replace REPLACE_WITH_RANDOM_API_KEY below before enabling this unit.
+ExecStart=/path/to/onedrive-mcp/venv/bin/mcpo --host 127.0.0.1 --port 8765 --api-key "REPLACE_WITH_RANDOM_API_KEY" -- /path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/server.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Grant write access only to what the server actually needs: the download
+# directory and the directory holding the token cache. Adjust paths to
+# match your .env's DOWNLOAD_DIR / TOKEN_CACHE_PATH if you changed them
+# from the project-relative defaults.
+ReadWritePaths=/path/to/onedrive-mcp/downloads /path/to/onedrive-mcp
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target

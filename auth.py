@@ -31,6 +31,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # the same configuration source, regardless of the launching process's cwd.
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Harden .env permissions to owner-only on import, best-effort. .env holds
+# no bearer secret today (just AZURE_CLIENT_ID/AZURE_TENANT_ID/paths), but
+# it's exactly the kind of file that tends to accumulate sensitive values
+# over time, and token_cache.bin already gets the same treatment.
+_env_path = PROJECT_ROOT / ".env"
+if _env_path.exists():
+    try:
+        os.chmod(_env_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
 AUTHORITY_BASE = "https://login.microsoftonline.com"
 
 # Delegated scopes needed for read-only OneDrive access. Files.Read.All
