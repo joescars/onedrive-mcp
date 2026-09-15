@@ -11,22 +11,34 @@ of a write call.
 """
 from __future__ import annotations
 
+import base64
 import email.utils
+import hashlib
+import hmac
+import json
+import math
 import mimetypes
 import os
+import secrets
 import stat
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
+from urllib.parse import urlsplit
 
 import requests
+from filelock import FileLock, Timeout
 
 from auth import AuthConfigError, get_access_token
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 MAX_RETRIES = 4
+MAX_RETRY_WAIT = 60.0
+MAX_PAGE_SIZE = 200
+_PAGE_KEY = secrets.token_bytes(32)
 
 
 class GraphError(RuntimeError):
@@ -39,7 +51,7 @@ class GraphNotFoundError(GraphError):
 
 def _parse_retry_after(value: Optional[str]) -> float:
     """Parse a Retry-After header, which RFC 9110 allows as either delta
-    seconds or an HTTP-date (Graph sends the date form). Clamped to [0, 30].
+    seconds or an HTTP-date. Never shorten a valid server-requested delay.
     Any unparseable value falls back to 2s — never crashes the 429 handler.
     """
     if not value:
@@ -51,18 +63,19 @@ def _parse_retry_after(value: Optional[str]) -> float:
         # HTTP-date form, e.g. "Wed, 21 Oct 2015 07:28:00 GMT"
         try:
             then = email.utils.parsedate_to_datetime(value)
-            seconds = (then.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()
-        except (TypeError, ValueError):
+            if then.tzinfo is None:
+                then = then.replace(tzinfo=timezone.utc)
+            seconds = (then - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
             return 2.0
-    return max(0.0, min(seconds, 30.0))
+    return max(0.0, seconds) if math.isfinite(seconds) else 2.0
 
 
 # ---------------------------------------------------------------------------
 # Core, read-only-only HTTP call
 # ---------------------------------------------------------------------------
 
-def _get(url: str, *, params: Optional[dict] = None, stream: bool = False,
-          _retry_count: int = 0, _allow_full_url: bool = False) -> requests.Response:
+def _get(url: str, *, params: Optional[dict] = None, stream: bool = False) -> requests.Response:
     """The ONLY function in this codebase allowed to call the network for
     Graph. It always performs requests.get (READ ONLY — see module docstring).
     """
@@ -71,58 +84,65 @@ def _get(url: str, *, params: Optional[dict] = None, stream: bool = False,
     http_verb = requests.get
     assert http_verb is requests.get, "graph_client must only ever perform GET requests"
 
-    try:
-        token = get_access_token()
-    except AuthConfigError as exc:
-        raise GraphError(str(exc)) from exc
+    refreshed = False
+    force_refresh = False
+    retries = 0
+    waited = 0.0
+    while True:
+        try:
+            token = get_access_token(force_refresh=force_refresh)
+            force_refresh = False
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = http_verb(url, headers=headers, params=params, stream=stream, timeout=60)
+        except AuthConfigError as exc:
+            raise GraphError(str(exc)) from None
+        except requests.exceptions.RequestException:
+            raise GraphError("Microsoft Graph connection failed. Please retry later.") from None
 
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = http_verb(url, headers=headers, params=params, stream=stream, timeout=60)
-
-    if resp.status_code == 401 and _retry_count == 0:
-        # Access token might have just expired; acquire_token_silent inside
-        # get_access_token() already handles refresh, but in case the cached
-        # token was stale at call time, force one retry.
-        return _get(url, params=params, stream=stream, _retry_count=1)
-
-    if resp.status_code == 429:
-        if _retry_count >= MAX_RETRIES:
+        if resp.ok:
+            return resp
+        status = resp.status_code
+        retry_after = resp.headers.get("Retry-After")
+        resp.close()
+        if status == 401 and not refreshed:
+            refreshed = True
+            force_refresh = True
+            continue
+        if status == 429:
+            delay = _parse_retry_after(retry_after) if retry_after else 2.0 ** (retries + 1)
+            if retries >= MAX_RETRIES or waited + delay > MAX_RETRY_WAIT:
+                raise GraphError(
+                    f"Microsoft Graph is throttling requests (HTTP 429). "
+                    f"Retry later, after at least {delay:g} seconds."
+                )
+            time.sleep(delay)
+            waited += delay
+            retries += 1
+            continue
+        if status == 404:
+            raise GraphNotFoundError("The requested OneDrive item was not found.")
+        if status == 401:
             raise GraphError(
-                "Microsoft Graph is throttling requests (HTTP 429) and the "
-                "retry budget was exhausted. Please try again shortly."
+                "Microsoft Graph rejected the access token after a refresh attempt. "
+                "Re-run 'python scripts/setup_auth.py' to sign in again."
             )
-        time.sleep(_parse_retry_after(resp.headers.get("Retry-After")))
-        return _get(url, params=params, stream=stream, _retry_count=_retry_count + 1)
-
-    if resp.status_code == 404:
-        raise GraphNotFoundError("The requested OneDrive item was not found.")
-
-    if resp.status_code == 401:
-        raise GraphError(
-            "Microsoft Graph rejected the access token as unauthorized even "
-            "after a refresh attempt. Your sign-in may have been revoked. "
-            "Re-run 'python scripts/setup_auth.py' to sign in again."
-        )
-
-    if resp.status_code == 403:
-        raise GraphError(
-            "Microsoft Graph denied access (HTTP 403). This usually means "
-            "the app registration is missing the Files.Read / Files.Read.All "
-            "delegated permission, or the signed-in account doesn't have "
-            "access to this item."
-        )
-
-    if not resp.ok:
-        raise GraphError(
-            f"Microsoft Graph request failed: HTTP {resp.status_code} "
-            f"{resp.reason} — {resp.text[:500]}"
-        )
-
-    return resp
+        if status == 403:
+            raise GraphError(
+                "Microsoft Graph denied access (HTTP 403). Check Files.Read / "
+                "Files.Read.All delegated permissions and access to this item."
+            )
+        raise GraphError(f"Microsoft Graph request failed: HTTP {status}. Please retry later.")
 
 
 def _get_json(url: str, *, params: Optional[dict] = None) -> dict:
-    return _get(url, params=params).json()
+    try:
+        with _get(url, params=params) as response:
+            result = response.json()
+    except (requests.exceptions.RequestException, ValueError):
+        raise GraphError("Microsoft Graph returned an unreadable response. Please retry later.") from None
+    if not isinstance(result, dict):
+        raise GraphError("Microsoft Graph returned an unexpected response.")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +194,8 @@ def _quote_graph_id(item_id: str) -> str:
     is hit (N-L4). Real ids (e.g. '977892149CC23DE6!s8a...') pass through
     unchanged; encoded dots/slashes have no dot-segment meaning on the wire.
     """
+    if item_id in (".", ".."):
+        raise GraphError("Invalid OneDrive item id: dot-segment traversal is not allowed.")
     return requests.utils.quote(item_id, safe="")
 
 
@@ -251,34 +273,89 @@ def shape_drive_item_full(item: dict) -> dict:
 # High-level, read-only operations used by the MCP tools
 # ---------------------------------------------------------------------------
 
-def search_items(query: str, top: int = 20) -> list[dict]:
-    # safe="" percent-encodes '/' and '?' inside the OData query so a
-    # crafted search term cannot shift the search(q='...') endpoint or
-    # become a query string (N-L4).
-    url = f"{GRAPH_BASE}/me/drive/root/search(q='{requests.utils.quote(query, safe='')}')"
-    data = _get_json(url, params={"$top": top})
-    items = data.get("value", [])
-    return [shape_drive_item(i) for i in items[:top]]
+def _encode_next_link(url: str, endpoint: str, top: int) -> str:
+    # Graph may canonicalize /me/drive/root to /drives/{id}/items/{id}.
+    # Sign the returned URL instead of trusting a caller-supplied raw URL.
+    try:
+        candidate = urlsplit(url)
+        if (
+            candidate.scheme != "https"
+            or candidate.netloc != "graph.microsoft.com"
+            or not candidate.path.startswith(("/v1.0/me/drive/", "/v1.0/drives/"))
+            or candidate.fragment
+            or any(ord(c) < 33 for c in url)
+            or len(url) > 16000
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise GraphError("Microsoft Graph returned an invalid continuation link.") from None
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "url": url, "endpoint": endpoint, "top": top, "expires": time.time() + 3600,
+    }).encode()).decode()
+    signature = hmac.new(_PAGE_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
 
 
-def list_folder(path: str = "/", top: int = 50) -> dict:
+def _decode_next_link(next_link: str, endpoint: str, top: int) -> str:
+    try:
+        if not isinstance(next_link, str) or len(next_link) > 32768:
+            raise ValueError
+        payload, signature = next_link.split(".")
+        expected = hmac.new(_PAGE_KEY, payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        data = json.loads(base64.urlsafe_b64decode(payload))
+        if (
+            data["endpoint"] != endpoint or data["top"] != top
+            or data["expires"] < time.time()
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise GraphError(
+            "Invalid next_link. Use the continuation returned by the same tool "
+            "with the same query/path and top. Restart paging if it expired "
+            "or the server restarted."
+        ) from None
+    return data["url"]
+
+
+def _get_page(endpoint: str, top: int, next_link: Optional[str]) -> dict:
+    if type(top) is not int or not 1 <= top <= MAX_PAGE_SIZE:
+        raise GraphError(f"top must be an integer between 1 and {MAX_PAGE_SIZE}.")
+    url = _decode_next_link(next_link, endpoint, top) if next_link is not None else endpoint
+    data = _get_json(url, params=None if next_link is not None else {"$top": top})
+    items = data.get("value")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise GraphError("Microsoft Graph returned an invalid item page.")
+    if len(items) > top:
+        raise GraphError("Microsoft Graph exceeded the requested page size; no items were silently discarded.")
+    continuation = data.get("@odata.nextLink")
+    if continuation is not None:
+        if not isinstance(continuation, str):
+            raise GraphError("Microsoft Graph returned an invalid continuation link.")
+        continuation = _encode_next_link(continuation, endpoint, top)
+    return {
+        "items": [shape_drive_item(item) for item in items],
+        "next_link": continuation,
+        "has_more": continuation is not None,
+    }
+
+
+def search_items(query: str, top: int = 20, next_link: Optional[str] = None) -> dict:
+    literal = requests.utils.quote(query.replace("'", "''"), safe="")
+    url = f"{GRAPH_BASE}/me/drive/root/search(q='{literal}')"
+    return _get_page(url, top, next_link)
+
+
+def list_folder(path: str = "/", top: int = 50, next_link: Optional[str] = None) -> dict:
     item_url = resolve_item_url(path)
-    children_url = f"{item_url}:/children" if path not in ("/", "", "root") and not _is_probably_item_id(path) else f"{item_url}/children"
-    # For root or item-id addressing, ":children" colon-suffix isn't used.
     if path in ("/", "", "root"):
         children_url = f"{GRAPH_BASE}/me/drive/root/children"
     elif _is_probably_item_id(path):
-        children_url = f"{build_item_url_from_id(path)}/children"
+        children_url = f"{item_url}/children"
     else:
-        clean = path if path.startswith("/") else f"/{path}"
-        children_url = f"{GRAPH_BASE}/me/drive/root:{_quote_graph_path(clean)}:/children"
-
-    data = _get_json(children_url, params={"$top": top})
-    items = data.get("value", [])
-    return {
-        "items": [shape_drive_item(i) for i in items[:top]],
-        "next_link": data.get("@odata.nextLink"),
-    }
+        children_url = f"{item_url}:/children"
+    return _get_page(children_url, top, next_link)
 
 
 def get_item_metadata(path_or_id: str) -> dict:
@@ -306,10 +383,58 @@ def _valid_dest_name(name: str) -> bool:
     """True only for a bare, non-empty file name that stays inside the
     download directory (N-L2): no path separators, no dot-segments."""
     name = (name or "").strip()
-    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+    return (
+        bool(name) and "/" not in name and "\\" not in name and ":" not in name
+        and name not in (".", "..", ".download.lock")
+        and not name.startswith(".onedrive-part-")
+        and all(ord(c) >= 32 for c in name)
+    )
+
+
+def _positive_limit(variable: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(variable, str(default)))
+        if value > 0:
+            return value
+    except ValueError:
+        raise GraphError(f"{variable} must be a positive integer number of bytes.") from None
+    raise GraphError(f"{variable} must be a positive integer number of bytes.")
+
+
+def _directory_size(directory: Path) -> int:
+    def fail_scan(error: OSError) -> None:
+        raise error
+
+    total = 0
+    for root, _, filenames in os.walk(directory, onerror=fail_scan, followlinks=False):
+        for filename in filenames:
+            path = Path(root) / filename
+            if not path.is_symlink():
+                total += path.stat().st_size
+    return total
 
 
 def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[str] = None) -> dict:
+    """Download under a directory-wide lock so concurrent requests share the storage budget."""
+    try:
+        download_dir = download_dir.resolve()
+        download_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(download_dir, stat.S_IRWXU)
+        with FileLock(download_dir / ".download.lock", timeout=10, mode=0o600):
+            return _download_file(path_or_id, download_dir, dest_filename)
+    except requests.exceptions.RequestException:
+        # Requests exception text can contain signed URLs, including during iter_content.
+        raise GraphError("File transfer failed. No completed download was saved; please retry.") from None
+    except Timeout:
+        raise GraphError("Download directory is busy. Wait for the current transfer and retry.") from None
+    except OSError:
+        raise GraphError(
+            "Could not save the download. Check directory permissions, filesystem "
+            "hard-link support, and available disk space."
+        ) from None
+
+
+def _download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[str]) -> dict:
     """Downloads a file's content (read-only) and saves it under download_dir.
 
     Uses the item's @microsoft.graph.downloadUrl when available (a
@@ -341,68 +466,63 @@ def download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[s
             "with no path separators."
         )
 
-    download_dir.mkdir(parents=True, exist_ok=True)
-    # Restrict the downloads directory to the owner only — downloaded
-    # content can include personal documents and should not inherit the
-    # process umask (which may leave it group/world-readable on a shared
-    # host). Best-effort: don't fail the download if chmod isn't permitted.
-    try:
-        os.chmod(download_dir, stat.S_IRWXU)
-    except OSError:
-        pass
-    dest_path = (download_dir / name).resolve()
+    dest_path = download_dir / name
     # Guard against path traversal via a crafted dest_filename (N-L2/L2
     # hardening): the resolved destination must live strictly inside the
     # download directory — not an escape, not the directory itself.
-    if download_dir.resolve() not in dest_path.parents:
+    if dest_path.resolve().parent != download_dir:
         raise GraphError("Invalid destination filename.")
     # Refuse to silently clobber an existing file (N-L2) — otherwise a
     # re-download (or a crafted name colliding with a prior document) would
     # overwrite real personal data without warning.
-    if dest_path.exists():
+    if dest_path.exists() or dest_path.is_symlink():
         raise GraphError(
             f"A file named '{name}' already exists in {download_dir}. "
             "Choose a different dest_filename to avoid overwriting it."
         )
 
+    file_limit = _positive_limit("MAX_DOWNLOAD_BYTES", 100 * 1024 * 1024)
+    directory_limit = _positive_limit("MAX_DOWNLOAD_DIR_BYTES", 1024 * 1024 * 1024)
+    used = _directory_size(download_dir)
+    budget = min(file_limit, directory_limit - used)
+    expected_size = item.get("size")
+    if expected_size is not None and (type(expected_size) is not int or expected_size < 0):
+        raise GraphError("Microsoft Graph returned an invalid file size.")
+    if budget < 0 or (expected_size is not None and expected_size > budget):
+        raise GraphError("Download exceeds MAX_DOWNLOAD_BYTES or MAX_DOWNLOAD_DIR_BYTES. Free space or adjust the limits.")
+
     direct_url = item.get("@microsoft.graph.downloadUrl")
     if direct_url:
-        # Pre-authenticated URL: still routed through _get so retries/backoff
-        # apply, but it needs no Authorization header. _get always adds one;
-        # Graph's CDN download URLs ignore/accept an extra bearer header fine
-        # in practice, but to be safe we do a raw, GET-only request here too.
+        if not isinstance(direct_url, str) or urlsplit(direct_url).scheme != "https":
+            raise GraphError("Microsoft Graph returned an invalid download URL.")
         resp = requests.get(direct_url, stream=True, timeout=120)
-        if not resp.ok:
-            raise GraphError(f"Failed to download file content: HTTP {resp.status_code}")
     else:
-        content_url = f"{url}/content"
-        resp = _get(content_url, stream=True)
+        resp = _get(f"{url}/content", stream=True)
 
     total = 0
-    # N-L1: create with owner-only mode from the start, so the file is never
-    # group/world-readable during the stream (previously open() created it at
-    # 0664-umask until the chmod after the transfer finished).
-    fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
-    with os.fdopen(fd, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 256):
-            if chunk:
-                f.write(chunk)
-                total += len(chunk)
-
-    # Best-effort: guarantee owner-only even if the FS ignored the mode.
-    try:
-        os.chmod(dest_path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-
-    expected_size = item.get("size")
-    if expected_size is not None and total != expected_size:
-        raise GraphError(
-            f"Download size mismatch for '{name}': expected {expected_size} "
-            f"bytes from OneDrive metadata but wrote {total} bytes. The file "
-            "may be truncated or corrupted — it was still saved to "
-            f"{dest_path}, but re-download before trusting its contents."
-        )
+    with resp:
+        if not resp.ok:
+            raise GraphError(f"Failed to download file content: HTTP {resp.status_code}")
+        fd, temporary = tempfile.mkstemp(prefix=".onedrive-part-", dir=download_dir)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        total += len(chunk)
+                        if total > budget:
+                            raise GraphError("Download exceeded the configured size/storage limit; partial data was removed.")
+                        f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+            if expected_size is not None and total != expected_size:
+                raise GraphError(f"Download size mismatch for '{name}'; partial data was removed. Please retry.")
+            # Linking is atomic and refuses existing targets, unlike replace/rename.
+            try:
+                os.link(temporary, dest_path)
+            except FileExistsError:
+                raise GraphError("Destination already exists. Choose a different dest_filename.") from None
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     mime_type = (item.get("file") or {}).get("mimeType") or mimetypes.guess_type(name)[0] or "application/octet-stream"
 

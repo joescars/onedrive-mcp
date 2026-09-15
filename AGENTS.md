@@ -18,12 +18,14 @@ consumes this server. This file is about how to safely modify the code.
 This is the single most important rule in this codebase:
 
 - `graph_client.py` must NEVER call `requests.post/put/patch/delete` against
-  Microsoft Graph. There is exactly one function, `_get()`, that is allowed
-  to touch the network, and it hardcodes `requests.get` with an `assert`
+  Microsoft Graph. `_get()` is the only Graph network helper, and it
+  hardcodes `requests.get` with an `assert`
   guarding against that being changed. Do not add a write/upload/delete/
   rename/move capability, even if asked to "optimize" or "extend" this file
   — if such a feature is ever wanted, it must be a new, clearly-labeled,
   explicitly-opt-in tool, not a change to `_get()` or the existing tools.
+  A separate GET-only CDN request streams pre-authenticated download URLs
+  without an Authorization header. Never expose those URLs in errors or logs.
 - The MCP server (`server.py`) must only ever expose read-style tools:
   `search_onedrive`, `list_folder`, `get_item_metadata`, `download_file`
   (downloads FROM OneDrive TO local disk — never the reverse), and
@@ -41,13 +43,15 @@ server.py        MCP server (FastMCP, stdio transport) — the 5 tool defs.
                  friendly {"error": ...} dicts (never a raw traceback).
 graph_client.py  Thin Microsoft Graph HTTP wrapper. Owns:
                  - the GET-only enforcement (see above)
-                 - 401 → silent-refresh-then-retry-once
-                 - 429 → backoff honoring Retry-After, up to MAX_RETRIES
+                 - 401 → forced silent refresh, then retry once
+                 - 429 → independent retry/sleep budgets honoring Retry-After
                  - 404 → GraphNotFoundError with a clean message
                  - path_or_id resolution (human path vs raw Graph item id)
+                 - signed pagination continuations and bounded page sizes
+                 - atomic downloads and directory/file byte limits
                  - response shaping (shape_drive_item / shape_drive_item_full)
 auth.py          MSAL PublicClientApplication, device-code flow, token
-                 cache load/save (chmod 600), silent token acquisition.
+                 locked, atomic cache load/save (chmod 600), silent token acquisition.
                  No Graph HTTP calls live here — that's graph_client.py's job.
 scripts/
   setup_auth.py  One-time interactive device-code sign-in (run by the human).
@@ -103,6 +107,11 @@ rather than reintroducing `load_dotenv()` with no arguments.
 
 - Python 3.10+ (developed against 3.12). Use the project's own `venv/`, not
   system Python.
+- Linux is the secure deployment target. Windows is development-only; do not
+  claim POSIX modes implement Windows ACLs. Optional bridge/maintenance tools
+  require Python 3.11+.
+- Install `requirements.lock` with `--require-hashes`. Dependency inputs and
+  bridge/development lock regeneration are documented in README.md.
 - `requirements.txt` pins `mcp<2.0.0` deliberately — `mcp` 2.x moved/renamed
   `FastMCP`. Do not upgrade past 2.0 without updating `server.py`'s import
   and verifying the stdio handshake still works.
@@ -115,8 +124,7 @@ rather than reintroducing `load_dotenv()` with no arguments.
 
 ## Git workflow for this repo
 
-- This repo is git-initialized locally only — there is no remote configured
-  and nothing should be pushed anywhere without the user explicitly asking.
+- Do not push or open a PR unless the user explicitly requests it.
 - Commit messages should explain the *why*, especially for anything touching
   auth, path resolution, or the read-only guarantees — future agents (and
   the human) need to understand why a given guard exists before "simplifying"

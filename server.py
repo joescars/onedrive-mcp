@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 import graph_client
 from graph_client import GraphError, GraphNotFoundError
@@ -25,6 +26,7 @@ from graph_client import GraphError, GraphNotFoundError
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 mcp = FastMCP("onedrive-readonly")
+PageSize = Annotated[int, Field(ge=1, le=graph_client.MAX_PAGE_SIZE, strict=True)]
 
 
 def _download_dir() -> Path:
@@ -45,38 +47,40 @@ def _friendly_error(exc: Exception) -> dict:
 
 
 @mcp.tool()
-def search_onedrive(query: str, top: int = 20) -> dict:
+def search_onedrive(query: str, top: PageSize = 20, next_link: Optional[str] = None) -> dict:
     """Search OneDrive for files/folders by name or content match.
 
     Args:
         query: Search text (Graph full-text search over file/folder names and content).
-        top: Max number of results to return (default 20).
+        top: Page size, between 1 and 200 (default 20).
+        next_link: Continuation returned by this tool; keep query and top unchanged.
 
-    Returns a list of items: {name, id, path, size, last_modified, is_folder, web_url}.
+    Returns {query, count, items, next_link, has_more}. Repeat with next_link
+    until has_more is false; count is the number of items in this page only.
     """
     try:
-        results = graph_client.search_items(query, top=top)
-        return {"query": query, "count": len(results), "items": results}
+        page = graph_client.search_items(query, top=top, next_link=next_link)
+        return {"query": query, "count": len(page["items"]), **page}
     except (GraphError, GraphNotFoundError) as exc:
         return _friendly_error(exc)
 
 
 @mcp.tool()
-def list_folder(path: str = "/", top: int = 50) -> dict:
+def list_folder(path: str = "/", top: PageSize = 50, next_link: Optional[str] = None) -> dict:
     """List the contents of a OneDrive folder.
 
     Args:
         path: Folder path (e.g. '/Documents') or 'root'/'/' for the drive root.
               A Graph item id is also accepted.
-        top: Max children to return per page (default 50).
+        top: Page size, between 1 and 200 (default 50).
+        next_link: Continuation returned by this tool; keep path and top unchanged.
 
-    Returns {items: [...], next_link}. next_link is set when there are more
-    results than 'top' (basic paging support — pass the returned items and
-    note next_link is a raw Graph URL for reference, not directly callable
-    by this tool today).
+    Returns {items: [...], next_link, has_more}. Repeat with next_link until
+    has_more is false. Opaque continuations are bound to this folder and page size,
+    and expire after one hour or a server restart.
     """
     try:
-        return graph_client.list_folder(path, top=top)
+        return graph_client.list_folder(path, top=top, next_link=next_link)
     except (GraphError, GraphNotFoundError) as exc:
         return _friendly_error(exc)
 

@@ -24,10 +24,17 @@ is enforced in code, not just by convention:
 ## Requirements
 
 - Linux server with Python 3.12 (or any Python 3.10+)
+- The optional `mcpo` bridge and dependency-maintenance tools require Python 3.11+.
 - A **personal Microsoft account** (outlook.com/hotmail.com/live.com or a
   Microsoft account added to consumer OneDrive) — this is NOT for OneDrive
   for Business / SharePoint (those use a different auth audience).
 - An Azure App Registration (free, takes ~5 minutes — see below).
+
+**Platform security boundary:** Linux is the supported production platform.
+Windows/non-POSIX execution is development-only and emits a warning: `chmod`
+does not establish owner-only Windows ACLs. Do not use real tokens or personal
+downloads there unless you independently secure the directories with appropriate
+ACLs. The token cache is plaintext protected by permissions, not encrypted.
 
 ## 1. Azure Portal app registration
 
@@ -63,7 +70,7 @@ That's it — no client secret, no redirect URI, no admin consent needed.
 ```bash
 cd /path/to/onedrive-mcp
 python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
+./venv/bin/pip install --require-hashes -r requirements.lock
 
 cp .env.example .env
 # edit .env: set AZURE_CLIENT_ID to the Application (client) ID from step 1.6
@@ -77,6 +84,17 @@ cp .env.example .env
 | `AZURE_TENANT_ID` | `consumers` | Leave as `consumers` for personal MSA |
 | `TOKEN_CACHE_PATH` | `./token_cache.bin` | Where MSAL persists tokens (chmod 600) |
 | `DOWNLOAD_DIR` | `./downloads` | Local dir for downloaded files |
+| `MAX_DOWNLOAD_BYTES` | `104857600` | Positive per-file limit in bytes (100 MiB) |
+| `MAX_DOWNLOAD_DIR_BYTES` | `1073741824` | Positive total download-directory limit in bytes (1 GiB) |
+
+Relative cache/download paths are anchored to this project's directory, not the
+launching process's working directory. Limits are checked against metadata and
+during streaming, including when size metadata is missing or incorrect.
+Transfers sharing a download directory are serialized to enforce its budget;
+unrelated processes writing there are outside this quota mechanism. Existing
+files, including abandoned temporary files, count toward the budget. Files are
+never automatically deleted to make room: remove unneeded local downloads
+yourself or increase the limits.
 
 ## 3. One-time sign-in (device code flow)
 
@@ -99,6 +117,11 @@ save `token_cache.bin` (permissions restricted to your user only). Refresh
 tokens let the server silently renew access tokens after this — you should
 not need to repeat this step unless the token is revoked or unused for an
 extended period.
+
+Cache updates use owner-only temporary files and atomic replacement. A
+cross-process lock covers loading, refresh/sign-in, and persistence so simultaneous
+MCP hosts cannot overwrite each other's cache updates. A busy cache returns an
+actionable error after 10 seconds; wait for another sign-in/request to finish.
 
 ## 4. Run the server standalone (manual test)
 
@@ -139,7 +162,7 @@ Bridge with [`mcpo`](https://github.com/open-webui/mcpo):
 ```bash
 # install mcpo into this project's venv (it must be importable by the
 # same interpreter that runs the bridge launcher below)
-./venv/bin/pip install mcpo
+./venv/bin/pip install --require-hashes -r requirements-bridge.lock
 ```
 
 **Generate the API key into a 0600 env file — do not type it into a
@@ -167,6 +190,7 @@ from the env file, so **the key never appears in any argv** (mcpo's own
 CLI only accepts `--api-key` as a command-line argument, which is why this
 launcher exists). It also refuses to start if the env file is
 group/world-readable or the key is unset.
+Relative env-file arguments are resolved against the project directory.
 
 Then in Open WebUI: **Settings → Tools → Add Tool Server** → OpenAPI URL
 `http://<server-host>:8765` (use `http://127.0.0.1:8765` if Open WebUI runs
@@ -174,9 +198,9 @@ on the same host, or your private network address otherwise), and paste the
 same API key (from `.mcpo.env`) into Open WebUI's "API Key" field for this
 tool server.
 
-**Security note**: `mcpo` defaults to binding `0.0.0.0` (all network
-interfaces) with **no authentication at all** unless you set an API key.
-The launcher above always binds `127.0.0.1` and requires a key — treat
+**Security note**: `mcpo` can expose an HTTP endpoint with **no authentication
+at all** unless you set an API key; upstream binding defaults vary by version.
+The launcher above defaults to `127.0.0.1` and requires a key — treat
 both as required, not optional:
 - **Always set `MCPO_API_KEY`.** Without one, anyone who can reach the
   port — including any other local account on a shared/multi-user host,
@@ -201,6 +225,13 @@ default — it uses a root-owned `0600` `/etc/onedrive-mcpo.env` via
 `EnvironmentFile=` plus the same key-free launcher; copy, edit paths/user,
 then enable it yourself).
 
+Before enabling it, follow the unit's setup comments: create the private
+`/var/lib/onedrive-mcp` state/download directories, point `TOKEN_CACHE_PATH`
+and `DOWNLOAD_DIR` there, and sign in as the service account. Only this state
+directory is writable; the source and interpreter stay read-only. Systemd reads
+the root-owned API-key file and supplies the environment; the unprivileged
+launcher must **not** receive that file as a command-line argument.
+
 ```bash
 sudo cp deploy/onedrive-mcpo.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -211,14 +242,32 @@ sudo systemctl enable --now onedrive-mcpo.service
 
 | Tool | Description |
 |---|---|
-| `search_onedrive(query, top=20)` | Full-text search across the drive |
-| `list_folder(path='/', top=50)` | List a folder's children |
+| `search_onedrive(query, top=20, next_link=None)` | Full-text search across the drive, one page at a time |
+| `list_folder(path='/', top=50, next_link=None)` | List a folder's children, one page at a time |
 | `get_item_metadata(path_or_id)` | Full metadata for one file/folder |
 | `download_file(path_or_id, dest_filename=None)` | Download a file to `DOWNLOAD_DIR`, returns local path |
 | `get_drive_info()` | Quota/owner info — good smoke test |
 
 All tools accept either a human path (e.g. `/Documents/report.pdf`) or a
 raw Graph item id where a "path_or_id" parameter is documented.
+
+Search preserves its `{query, count, items}` fields and adds `next_link` and
+`has_more`. Folder listing returns `{items, next_link, has_more}`. `top` must
+be an integer between 1 and 200. When `has_more` is true, pass `next_link`
+back to the **same tool with the same query/path and top**. It is an opaque,
+signed continuation, not a URL to fetch yourself, and expires after one hour
+or a server restart. Restart paging after expiration. Counts are per-page,
+not totals. This replaces the old folder-listing raw-URL `next_link`.
+
+Downloads are published only after transfer and size validation succeed.
+Interrupted/oversized transfers remove their temporary files and can be retried
+with the same destination name. Publication never overwrites existing files,
+even under a filename race. Use a filesystem supporting atomic hard links
+(for example ext4); permission, storage and unsupported-filesystem errors are
+reported explicitly. A crashed process can leave an owner-only
+`.onedrive-part-*` file: remove it only after confirming no transfer is active.
+Transport failures produce sanitized errors rather than leaking signed
+download URLs into MCP responses or transcripts.
 
 ## Testing
 
@@ -228,8 +277,34 @@ raw Graph item id where a "path_or_id" parameter is documented.
 ./venv/bin/python -m pytest -v
 ```
 
-These mock all Graph HTTP responses with the `responses` library and test
-path resolution + response shaping logic only.
+These mock Graph/MSAL traffic and cover retry/refresh behavior, signed-URL
+error redaction, pagination, atomic downloads, quota limits, cache concurrency,
+and bridge-launch configuration. They also perform a real stdio handshake
+from an unrelated working directory and test MCP error responses using synthetic
+data. POSIX permission assertions run on Linux and are skipped on Windows;
+Windows passing is not evidence of secure ACLs.
+
+GitHub Actions runs Linux Python 3.10/3.12/3.14 and Windows development checks,
+plus an installed-dependency audit on pushes, pull requests and weekly.
+
+### Updating locked dependencies (Python 3.11+)
+
+The `.txt` files declare inputs; generated `.lock` files pin transitive versions
+and artifact hashes across supported Python versions/platforms. Do not manually
+edit a lockfile. Install the maintenance tools and regenerate in this order:
+
+```bash
+./venv/bin/pip install --require-hashes -r requirements-dev.lock
+./venv/bin/python -m uv pip compile requirements.txt --universal --python-version 3.10 --generate-hashes --output-file requirements.lock
+./venv/bin/python -m uv pip compile requirements-bridge.txt --universal --python-version 3.11 --generate-hashes --constraint requirements.lock --output-file requirements-bridge.lock
+./venv/bin/python -m uv pip compile requirements-dev.txt --universal --python-version 3.11 --generate-hashes --constraint requirements-bridge.lock --output-file requirements-dev.lock
+./venv/bin/pip install --require-hashes -r requirements-dev.lock
+./venv/bin/python -m pytest -v
+./venv/bin/python -m pip_audit --local
+```
+
+Add `--upgrade` to the compile commands to refresh already-locked versions.
+Review lockfile changes together and retain the `mcp<2.0.0` constraint.
 
 ### Manual integration smoke test (REQUIRES real sign-in first)
 
@@ -263,14 +338,15 @@ the pytest suite because it needs live credentials and network access.
 - **`invalid_grant` / "Could not silently refresh..."**: the refresh token
   expired or was revoked (e.g. password change, long inactivity, or you
   deleted `token_cache.bin`). Re-run `./venv/bin/python scripts/setup_auth.py`.
-- **Throttling (HTTP 429)**: `graph_client.py` already retries with
-  backoff honoring the `Retry-After` header, up to 4 attempts. If you still
-  see failures, you're issuing requests faster than Graph's limits allow —
-  reduce concurrency/frequency.
+- **Throttling (HTTP 429)**: up to 4 throttling retries honor `Retry-After`,
+  independently of one forced token refresh after a 401. Total throttling sleep
+  is bounded to 60 seconds per Graph request. If the requested delay exceeds the
+  remaining budget, the server returns a "retry later" error with the requested
+  delay instead of retrying too early. Missing headers use exponential backoff.
 - **`ModuleNotFoundError: mcp.server.fastmcp`**: you likely installed
   `mcp` 2.x. This project pins `mcp<2.0.0` in `requirements.txt` (FastMCP
   was renamed/relocated in mcp 2.x) — reinstall with
-  `./venv/bin/pip install -r requirements.txt`.
+  `./venv/bin/pip install --require-hashes -r requirements.lock`.
 
 ## Project structure
 
@@ -282,12 +358,20 @@ onedrive-mcp/
   scripts/
     setup_auth.py         One-time interactive device-code sign-in
     smoke_test.py          Manual integration test (needs real credentials)
+    run_mcp_bridge.py      API-key-protected HTTP bridge launcher
   tests/
     test_graph_client.py   Unit tests (mocked Graph HTTP responses)
     test_auth.py            Unit tests for auth config handling
+    test_hardening.py       Retry, paging, transfer limits and integrity
+    test_server.py          Real stdio handshake/error-boundary regression tests
+    test_bridge.py          Bridge configuration/startup regression tests
   deploy/
     onedrive-mcpo.service   systemd template for the mcpo HTTP bridge
   requirements.txt
+  requirements.lock        Hash-locked core and test dependencies
+  requirements-bridge.*    Optional mcpo inputs and lockfile
+  requirements-dev.*       Maintenance inputs and lockfile
+  .github/workflows/ci.yml Tests and scheduled dependency audit
   .env.example
   .gitignore
   README.md

@@ -19,14 +19,16 @@ Usage (see deploy/onedrive-mcpo.service):
     # or simply export the variables yourself:
     MCPO_API_KEY=... ./venv/bin/python scripts/run_mcp_bridge.py
 
-Requires: pip install mcpo  (into this project's venv, or otherwise
-importable by this interpreter).
+Requires: pip install --require-hashes -r requirements-bridge.lock
+(into this project's venv).
 """
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_env_file(path: Path) -> None:
@@ -49,6 +51,8 @@ def main() -> int:
 
     if len(sys.argv) == 2:
         env_file = Path(sys.argv[1]).expanduser()
+        if not env_file.is_absolute():
+            env_file = PROJECT_ROOT / env_file
         if not env_file.exists():
             print(f"env file not found: {env_file}", file=sys.stderr)
             return 2
@@ -62,7 +66,11 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        _load_env_file(env_file)
+        try:
+            _load_env_file(env_file)
+        except (OSError, ValueError):
+            print("Could not read bridge env file. Check its ownership and permissions.", file=sys.stderr)
+            return 1
 
     api_key = os.environ.get("MCPO_API_KEY", "").strip()
     if not api_key:
@@ -76,16 +84,22 @@ def main() -> int:
         return 1
 
     host = os.environ.get("MCPO_HOST", "127.0.0.1")
-    port = int(os.environ.get("MCPO_PORT", "8765"))
+    try:
+        port = int(os.environ.get("MCPO_PORT", "8765"))
+        if not 1 <= port <= 65535:
+            raise ValueError
+    except ValueError:
+        print("MCPO_PORT must be an integer between 1 and 65535.", file=sys.stderr)
+        return 1
 
-    server_script = Path(__file__).resolve().parent.parent / "server.py"
+    server_script = PROJECT_ROOT / "server.py"
 
     try:
         from mcpo.main import run  # provided by the `mcpo` package
     except ImportError:
         print(
             "mcpo is not installed in this interpreter. Install it with:\n"
-            "  ./venv/bin/pip install mcpo",
+            "  ./venv/bin/pip install --require-hashes -r requirements-bridge.lock",
             file=sys.stderr,
         )
         return 1

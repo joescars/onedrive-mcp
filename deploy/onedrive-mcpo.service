@@ -13,11 +13,17 @@
 # command line: anything in argv is readable by all local users via `ps`
 # and `/proc/PID/cmdline`, and ExecStart lines are readable by
 # unprivileged users via `systemctl cat`. Instead the key lives in a 0600
-# env file and scripts/run_mcp_bridge.py loads it into the process
-# environment only. Create it once:
-#   sudo install -m 600 -o your-username -g your-username /dev/null /etc/onedrive-mcpo.env
+# env file. Systemd loads it into the process environment, and the launcher
+# passes the key to mcpo in-process. Create it once:
+#   sudo install -m 600 -o root -g root /dev/null /etc/onedrive-mcpo.env
 #   printf 'MCPO_API_KEY=%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
 #       | sudo tee /etc/onedrive-mcpo.env >/dev/null
+# Create the state directories before starting (owned by the service account):
+#   sudo install -d -m 700 -o your-username -g your-username /var/lib/onedrive-mcp
+#   sudo install -d -m 700 -o your-username -g your-username /var/lib/onedrive-mcp/downloads
+# Set TOKEN_CACHE_PATH=/var/lib/onedrive-mcp/token_cache.bin and
+# DOWNLOAD_DIR=/var/lib/onedrive-mcp/downloads in the project's .env, and
+# run setup_auth.py as the service account before enabling this unit.
 #   # optional overrides (defaults shown): MCPO_HOST=127.0.0.1  MCPO_PORT=8765
 
 [Unit]
@@ -33,18 +39,16 @@ EnvironmentFile=/etc/onedrive-mcpo.env
 # use a reverse proxy (with auth) for remote access. No secrets in argv:
 # run_mcp_bridge.py reads MCPO_API_KEY from the environment and passes it
 # to mcpo in-process.
-ExecStart=/path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/scripts/run_mcp_bridge.py /etc/onedrive-mcpo.env
+ExecStart=/path/to/onedrive-mcp/venv/bin/python /path/to/onedrive-mcp/scripts/run_mcp_bridge.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-# Grant write access only to what the server actually needs: the download
-# directory and the directory holding the token cache. Adjust paths to
-# match your .env's DOWNLOAD_DIR / TOKEN_CACHE_PATH if you changed them
-# from the project-relative defaults.
-ReadWritePaths=/path/to/onedrive-mcp/downloads /path/to/onedrive-mcp
+# Keep code and the interpreter read-only. Cache replacement/locks require
+# directory write access, so store runtime state separately from source.
+ReadWritePaths=/var/lib/onedrive-mcp
 MemoryDenyWriteExecute=true
 
 [Install]
