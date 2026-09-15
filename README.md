@@ -4,10 +4,15 @@ A **read-only** Model Context Protocol (MCP) server that lets an AI agent
 search and download files from a **personal Microsoft OneDrive** account via
 the Microsoft Graph API.
 
-## Safety guarantee: read-only
+**Choose your client:** complete setup and sign-in (steps 1-3), then follow
+[VS Code / GitHub Copilot](#vs-code-github-copilot),
+[Hermes](#hermes), or [Open WebUI](#6-expose-to-open-webui-via-mcpo).
+VS Code and Hermes connect directly over stdio; only Open WebUI needs `mcpo`.
 
-This server only ever issues **HTTP GET** requests to Microsoft Graph. That
-is enforced in code, not just by convention:
+## Read-only design
+
+This server is designed for read-only access to Microsoft Graph. The current
+implementation uses **HTTP GET** for Graph requests:
 
 - Every network call in `graph_client.py` is a `requests.get`. The main
   fetch helper `_get()` hardcodes `requests.get` and asserts on that fact;
@@ -131,10 +136,13 @@ actionable error after 10 seconds; wait for another sign-in/request to finish.
 
 It will sit waiting on stdio (this is normal — it's meant to be driven by
 an MCP client, not typed into directly). Press Ctrl+C to stop. To actually
-exercise it, use `scripts/smoke_test.py` (below) or wire it into Hermes /
-Open WebUI.
+exercise it, use `scripts/smoke_test.py` (below) or connect it to VS Code,
+Hermes, or Open WebUI. A stdio client starts the process for you; do not
+leave a separate standalone instance running for it to connect to.
 
-## 5. Register with Hermes (stdio MCP client)
+## 5. Connect a stdio MCP client
+
+### Hermes
 
 Add to Hermes's MCP server config (JSON config, same shape as Claude
 Desktop's `mcpServers`):
@@ -153,6 +161,87 @@ Desktop's `mcpServers`):
 No secrets need to go in this config — `server.py` loads `.env` itself
 (via `python-dotenv`) from its own directory, so `AZURE_CLIENT_ID` etc.
 never appear in the Hermes config file.
+
+### VS Code (GitHub Copilot)
+
+Use a current VS Code release with GitHub Copilot Chat available and signed in.
+Complete steps 1-3 first, including device-code sign-in: the MCP server only
+refreshes cached credentials and cannot perform interactive sign-in from chat.
+You do **not** need `mcpo`, an HTTP port, or a bridge API key.
+
+**Choose where the server will run.** Linux is recommended. On Windows, a
+VS Code WSL or Remote-SSH window connected to Linux lets the server run there.
+Install this project, create its virtual environment, and sign in on that
+Linux host. In WSL, keep the checkout, token cache, and downloads in the Linux
+home filesystem rather than a Windows-mounted/OneDrive folder so POSIX
+permissions work. Do not reuse a Windows virtual environment in Linux.
+
+1. Open the Command Palette (`Ctrl+Shift+P` on Windows/Linux).
+2. Choose the configuration scope:
+   - **MCP: Open User Configuration** makes the server available across
+     workspaces in the current profile and runs it on your local machine.
+   - In a WSL/Remote-SSH window, use **MCP: Open Remote User Configuration**
+     to run the server on that Linux host.
+   - For one workspace, create `.vscode/mcp.json` in that workspace instead.
+     A remote workspace configuration runs on the remote host.
+3. Add the `onedrive` entry under `servers`, preserving any existing servers.
+   VS Code uses **`servers`**, not Hermes/Claude Desktop's `mcpServers`.
+   For a Linux installation, replace both paths with your actual absolute paths:
+
+```json
+{
+  "servers": {
+    "onedrive": {
+      "type": "stdio",
+      "command": "/home/you/onedrive-mcp/venv/bin/python",
+      "args": ["/home/you/onedrive-mcp/server.py"]
+    }
+  }
+}
+```
+
+If the workspace is this repository, a workspace-scoped Linux configuration
+can use `${workspaceFolder}/venv/bin/python` and
+`${workspaceFolder}/server.py` instead. Use absolute paths in user/remote-user
+configuration so opening a different project does not change the server path.
+The Python extension's selected interpreter is not a substitute for the
+`command` path; point directly to this project's virtual environment.
+
+For **native Windows development only**, the equivalent configuration is below.
+The [platform security warning](#requirements) still applies; this example
+does not configure Windows ACLs. JSON backslashes must be doubled, and paths
+containing spaces do not need extra embedded quotation marks.
+
+```json
+{
+  "servers": {
+    "onedrive": {
+      "type": "stdio",
+      "command": "C:\\Code\\onedrive-mcp\\venv\\Scripts\\python.exe",
+      "args": ["C:\\Code\\onedrive-mcp\\server.py"]
+    }
+  }
+}
+```
+
+4. Save the configuration. Run **MCP: List Servers**, select `onedrive`,
+   and start it. Review the server configuration and approve the trust prompt
+   if shown. VS Code should discover the five tools listed below.
+5. Open Chat, choose **Agent**, and use **Configure Tools** (or the **Tools**
+   tab, depending on the chat interface) to enable the `onedrive` tools.
+6. Try: `Use the OneDrive get_drive_info tool to show my quota.` Review and
+   approve the tool call if prompted. Then try the
+   [example requests](#example-requests) below.
+
+No tokens or `.env` values belong in `mcp.json`; the server loads its own
+project-local `.env`. Avoid committing machine-specific absolute paths in a
+shared workspace configuration; use a user configuration for personal setup.
+For startup errors, use **MCP: List Servers** > `onedrive` > **Show Output**.
+After changing `.env`, restart the server from the same server-management menu.
+
+See the official [VS Code MCP setup guide](https://code.visualstudio.com/docs/agent-customization/mcp-servers)
+and [configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)
+for current commands and UI details.
 
 ## 6. Expose to Open WebUI via `mcpo`
 
@@ -269,6 +358,27 @@ reported explicitly. A crashed process can leave an owner-only
 Transport failures produce sanitized errors rather than leaking signed
 download URLs into MCP responses or transcripts.
 
+## Example requests
+
+After connecting your client and enabling the tools, try:
+
+- `Use OneDrive to list the files in /Documents without downloading anything.`
+- `Search OneDrive for "invoice"; show names and paths, and tell me if more pages are available.`
+- `Get the metadata for /Documents/report.pdf without downloading its contents.`
+- `Download /Documents/report.pdf as report-copy.pdf and report the saved path.`
+
+**Where downloads go:** `local_path` is on the machine running this server,
+not necessarily the machine displaying chat. With WSL, Remote-SSH, or an
+Open WebUI bridge on another host, the file remains on that host. The tool
+returns a path and metadata, not the file's contents; a client needs separate
+filesystem access to read or summarize the downloaded file.
+
+**Privacy:** read-only does not mean private to the server. File names, paths,
+quota information, and metadata returned by tools enter your client's chat
+context and may be processed or retained according to that client's/model
+provider's policies. Review tool approvals and use only accounts and files you
+intend to make available. Never paste token-cache contents into chat or logs.
+
 ## Testing
 
 ### Unit tests (no credentials needed, no network calls)
@@ -319,6 +429,21 @@ the pytest suite because it needs live credentials and network access.
 
 ## Troubleshooting
 
+- **VS Code cannot find/start `onedrive`**: confirm the file uses a top-level
+  `servers` object, the interpreter/script paths exist on the selected
+  local or remote host, and dependencies were installed into that exact
+  virtual environment. Use **MCP: List Servers** > `onedrive` > **Show Output**.
+- **VS Code starts the server but tools are missing**: confirm you trusted
+  and enabled the server, selected **Agent**, and enabled its tools in
+  **Configure Tools** / **Tools**. Your organization's policies can restrict
+  MCP access; do not bypass them.
+- **VS Code reports no signed-in account**: run `scripts/setup_auth.py`
+  with the configured interpreter on the same host and as the same OS user
+  that runs the MCP server, then restart it. Signing into GitHub Copilot
+  does not sign this server into your personal Microsoft OneDrive account.
+- **Connecting VS Code to the `mcpo` URL fails**: that bridge exposes
+  OpenAPI for Open WebUI, not a native MCP HTTP endpoint. Use the stdio
+  configuration above, including a remote Linux configuration when needed.
 - **`AADSTS700016` / `AADSTS7000218`**: usually means "Allow public client
   flows" is not enabled on the app registration (step 1.8), or the client
   ID is wrong.
