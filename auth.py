@@ -2,7 +2,7 @@
 
 Handles:
   - Interactive device-code login (run once via scripts/setup_auth.py)
-  - Loading/saving an encrypted-at-rest-by-permissions token cache
+  - Loading/saving a plaintext token cache protected by filesystem permissions
   - Silent token acquisition (with refresh) for the running MCP server
 
 No Graph HTTP calls live here — this module is purely about acquiring an
@@ -11,14 +11,19 @@ only ever issues GET requests (see the read-only guard there).
 """
 from __future__ import annotations
 
+import logging
 import os
 import stat
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import msal
+import requests
 from dotenv import load_dotenv
+from filelock import FileLock, Timeout
 
 # This project's root directory (where .env, token_cache.bin, downloads/
 # live). Resolved from this file's own location, NOT from the process's
@@ -26,6 +31,12 @@ from dotenv import load_dotenv
 # server with an unrelated cwd (their own install dir), so relying on cwd
 # silently breaks .env discovery and any relative default paths.
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+if os.name != "posix":
+    logging.getLogger(__name__).warning(
+        "Windows/non-POSIX hosts are supported for development only. "
+        "Owner-only token/download permissions require a Linux deployment."
+    )
 
 # Load .env once at import time so both the server and the CLI scripts share
 # the same configuration source, regardless of the launching process's cwd.
@@ -38,9 +49,10 @@ load_dotenv(PROJECT_ROOT / ".env")
 _env_path = PROJECT_ROOT / ".env"
 if _env_path.exists():
     try:
-        os.chmod(_env_path, stat.S_IRUSR | stat.S_IWUSR)
+        if stat.S_IMODE(_env_path.stat().st_mode) != 0o600:
+            os.chmod(_env_path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("Could not restrict .env permissions; check the file's ownership.")
 
 AUTHORITY_BASE = "https://login.microsoftonline.com"
 
@@ -87,7 +99,8 @@ def _load_cache() -> msal.SerializableTokenCache:
     cache = msal.SerializableTokenCache()
     cache_path = get_token_cache_path()
     if cache_path.exists():
-        cache.deserialize(cache_path.read_text())
+        os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
+        cache.deserialize(cache_path.read_text(encoding="utf-8"))
     return cache
 
 
@@ -96,18 +109,38 @@ def _save_cache(cache: msal.SerializableTokenCache) -> None:
         return
     cache_path = get_token_cache_path()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    # Create with restrictive mode from the start (N-L1): with write_text the
-    # file is briefly created at 0664 (umask) before the chmod below, leaving
-    # a window where other local accounts (group/world) could read the
-    # serialized refresh token. os.open with 0600 closes that window.
-    fd = os.open(cache_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
-    with os.fdopen(fd, "w") as f:
-        f.write(cache.serialize())
-    # Best-effort: guarantee owner-only even if an existing file had looser mode.
+    serialized = cache.serialize()
+    fd, temporary = tempfile.mkstemp(prefix=".token-cache-", dir=cache_path.parent)
     try:
-        os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(serialized)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, cache_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+@contextmanager
+def _cache_transaction() -> Iterator[None]:
+    """Serialize the entire read/refresh/write cycle, including across hosts' processes."""
+    path = get_token_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(path) + ".lock", timeout=10, mode=0o600):
+            yield
+    except Timeout:
+        raise AuthConfigError(
+            "Token cache is busy. Wait for the other sign-in or request to finish and retry."
+        ) from None
+    except (requests.exceptions.RequestException, msal.exceptions.MsalServiceError):
+        raise AuthConfigError("Microsoft sign-in connection failed. Please try again later.") from None
+    except (OSError, ValueError):
+        raise AuthConfigError(
+            "Could not read or persist the token cache. Check its permissions and "
+            "available disk space; if the cache is corrupt, run scripts/setup_auth.py "
+            "with a new TOKEN_CACHE_PATH."
+        ) from None
 
 
 def build_app(cache: Optional[msal.SerializableTokenCache] = None) -> msal.PublicClientApplication:
@@ -121,6 +154,12 @@ def build_app(cache: Optional[msal.SerializableTokenCache] = None) -> msal.Publi
 
 
 def run_device_code_flow() -> dict:
+    """Run the human-driven sign-in while holding the shared cache lock."""
+    with _cache_transaction():
+        return _run_device_code_flow()
+
+
+def _run_device_code_flow() -> dict:
     """Interactive, one-time login. Prints instructions to stdout.
 
     Returns the MSAL token result dict on success. Raises AuthConfigError on
@@ -162,16 +201,20 @@ def run_device_code_flow() -> dict:
     return result
 
 
-def get_access_token() -> str:
+def get_access_token(*, force_refresh: bool = False) -> str:
     """Silently acquire (and transparently refresh) an access token.
 
     Raises AuthConfigError with a human-readable message if there is no
     usable cached account / refresh token, instructing the caller to run
     scripts/setup_auth.py again.
     """
+    with _cache_transaction():
+        return _get_access_token(force_refresh=force_refresh)
+
+
+def _get_access_token(*, force_refresh: bool) -> str:
     cache = _load_cache()
     app = build_app(cache)
-
     accounts = app.get_accounts()
     if not accounts:
         raise AuthConfigError(
@@ -179,7 +222,7 @@ def get_access_token() -> str:
             "'python scripts/setup_auth.py' once to sign in via device code."
         )
 
-    result = app.acquire_token_silent(SCOPES, account=accounts[0])
+    result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=force_refresh)
     _save_cache(cache)
 
     if not result or "access_token" not in result:

@@ -1,5 +1,7 @@
 .env
 token_cache.bin
+token_cache.bin.lock
+.token-cache-*
 .mcpo.env
 venv/
 .venv/

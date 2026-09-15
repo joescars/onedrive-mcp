@@ -2,6 +2,7 @@
 
 No real network calls — Graph HTTP responses are mocked with `responses`.
 """
+import os
 import sys
 from pathlib import Path
 from unittest import mock
@@ -141,7 +142,9 @@ def test_shape_drive_item_full_folder_child_count():
 
 @pytest.fixture(autouse=True)
 def _mock_token(monkeypatch):
-    monkeypatch.setattr(graph_client, "get_access_token", lambda: "fake-token")
+    monkeypatch.setattr(graph_client, "get_access_token", lambda **kwargs: "fake-token")
+    monkeypatch.delenv("MAX_DOWNLOAD_BYTES", raising=False)
+    monkeypatch.delenv("MAX_DOWNLOAD_DIR_BYTES", raising=False)
 
 
 @responses_lib.activate
@@ -153,9 +156,11 @@ def test_search_items_shapes_results():
         status=200,
     )
     results = graph_client.search_items("report", top=20)
-    assert len(results) == 2
-    assert results[0]["name"] == "foo.pdf"
-    assert results[1]["is_folder"] is True
+    assert len(results["items"]) == 2
+    assert results["items"][0]["name"] == "foo.pdf"
+    assert results["items"][1]["is_folder"] is True
+    assert results["next_link"] is None
+    assert results["has_more"] is False
 
 
 @responses_lib.activate
@@ -242,6 +247,7 @@ def test_forbidden_raises_clean_permission_error():
 # download_file: permissions hardening + size-mismatch detection
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions; Windows is development-only")
 @responses_lib.activate
 def test_download_file_chmods_dir_and_file_owner_only(tmp_path):
     import stat as stat_mod
@@ -285,6 +291,8 @@ def test_download_file_raises_on_size_mismatch(tmp_path):
     download_dir = tmp_path / "downloads"
     with pytest.raises(graph_client.GraphError, match="size mismatch"):
         graph_client.download_file("/foo.pdf", download_dir)
+    assert not (download_dir / "foo.pdf").exists()
+    assert not list(download_dir.glob(".onedrive-part-*"))
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +383,7 @@ def test_search_query_encodes_path_chars():
 # N-L1 / N-L2: downloads are created owner-only and never overwrite
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions; Windows is development-only")
 @responses_lib.activate
 def test_download_created_owner_only_at_creation(tmp_path):
     import stat as stat_mod
@@ -421,7 +430,8 @@ def test_download_refuses_to_overwrite_existing(tmp_path):
         graph_client.download_file("/foo.pdf", download_dir, dest_filename="important.txt")
     # The original file must be untouched.
     assert victim.read_text() == "ORIGINAL CONTENT"
-    assert victim.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert victim.stat().st_mode & 0o777 == 0o600
 
 
 @responses_lib.activate

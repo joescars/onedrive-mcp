@@ -1,0 +1,4 @@
+-r requirements-bridge.txt
+uv>=0.8
+pip-audit>=2.9
+pip>=26.2
