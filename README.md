@@ -1,5 +1,7 @@
 # OneDrive Read-Only MCP Server
 
+[![Tests and dependency audit](https://github.com/joescars/onedrive-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/joescars/onedrive-mcp/actions/workflows/ci.yml)
+
 A **read-only** Model Context Protocol (MCP) server that lets an AI agent
 search and download files from a **personal Microsoft OneDrive** account via
 the Microsoft Graph API.
@@ -8,6 +10,19 @@ the Microsoft Graph API.
 [VS Code / GitHub Copilot](#vs-code-github-copilot),
 [Hermes](#hermes), or [Open WebUI](#6-expose-to-open-webui-via-mcpo).
 VS Code and Hermes connect directly over stdio; only Open WebUI needs `mcpo`.
+
+## Contents
+
+- [Read-only design](#read-only-design)
+- [Requirements](#requirements)
+- [Azure Portal app registration](#1-azure-portal-app-registration)
+- [Local setup](#2-local-setup)
+- [One-time sign-in](#3-one-time-sign-in-device-code-flow)
+- [Connect VS Code, Hermes, or another stdio client](#5-connect-a-stdio-mcp-client)
+- [Expose to Open WebUI via `mcpo`](#6-expose-to-open-webui-via-mcpo)
+- [Tools exposed](#tools-exposed)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
 
 ## Read-only design
 
@@ -43,8 +58,8 @@ ACLs. The token cache is plaintext protected by permissions, not encrypted.
 
 ## 1. Azure Portal app registration
 
-1. Go to https://portal.azure.com → search **"App registrations"** → **New
-   registration**.
+1. Go to the [Azure Portal](https://portal.azure.com) → search **"App
+   registrations"** → **New registration**.
 2. **Name**: anything, e.g. `onedrive-mcp`.
 3. **Supported account types**: choose **"Personal Microsoft accounts
    only"** (or "Accounts in any organizational directory and personal
@@ -73,13 +88,21 @@ That's it — no client secret, no redirect URI, no admin consent needed.
 ## 2. Local setup
 
 ```bash
-cd /path/to/onedrive-mcp
+git clone https://github.com/joescars/onedrive-mcp.git
+cd onedrive-mcp
 python3 -m venv venv
 ./venv/bin/pip install --require-hashes -r requirements.lock
 
 cp .env.example .env
 # edit .env: set AZURE_CLIENT_ID to the Application (client) ID from step 1.6
+chmod 600 .env
 ```
+
+If you already have the repository, skip `git clone` and use its existing
+path. Keep the checkout, virtual environment, token cache, and download
+directory on a local Linux filesystem rather than a network share or
+cloud-synced folder so owner-only permissions and atomic file operations work
+as intended.
 
 `.env` fields:
 
@@ -127,6 +150,15 @@ Cache updates use owner-only temporary files and atomic replacement. A
 cross-process lock covers loading, refresh/sign-in, and persistence so simultaneous
 MCP hosts cannot overwrite each other's cache updates. A busy cache returns an
 actionable error after 10 seconds; wait for another sign-in/request to finish.
+
+Verify authentication and read access with the live smoke test:
+
+```bash
+./venv/bin/python scripts/smoke_test.py
+```
+
+This reads drive information and lists the root folder; it does not download
+or modify files.
 
 ## 4. Run the server standalone (manual test)
 
