@@ -9,9 +9,12 @@ the Microsoft Graph API.
 This server only ever issues **HTTP GET** requests to Microsoft Graph. That
 is enforced in code, not just by convention:
 
-- `graph_client.py` has exactly one function that talks to the network
-  (`_get`), it hardcodes `requests.get`, and it asserts on that fact.
-- No other function in the codebase calls `requests.post/put/patch/delete`.
+- Every network call in `graph_client.py` is a `requests.get`. The main
+  fetch helper `_get()` hardcodes `requests.get` and asserts on that fact;
+  the only other network call is the raw `requests.get` used to stream a
+  file's content from its pre-authenticated CDN URL during `download_file`
+  (still GET-only — it never uploads or modifies anything).
+- No function in the codebase calls `requests.post/put/patch/delete`.
 - There is no "write", "delete", "upload", "move", or "rename" tool exposed
   by the MCP server — only `search_onedrive`, `list_folder`,
   `get_item_metadata`, `download_file` (downloads FROM OneDrive to local
