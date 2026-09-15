@@ -429,6 +429,14 @@ the pytest suite because it needs live credentials and network access.
 
 ## Troubleshooting
 
+- **`No matching distribution found` for a locked version**: the package
+  index visible to pip may not expose the same releases as the index used to
+  generate the locks. Check availability with
+  `python -m pip index versions <package>` using the intended interpreter.
+  Use the updated project lockfiles; do not edit only a version number, remove
+  hashes, or bypass your organization's package-index/TLS policy. Maintainers
+  should regenerate all affected locks and verify a clean install against the
+  target index, not just an environment where dependencies are already installed.
 - **VS Code cannot find/start `onedrive`**: confirm the file uses a top-level
   `servers` object, the interpreter/script paths exist on the selected
   local or remote host, and dependencies were installed into that exact
