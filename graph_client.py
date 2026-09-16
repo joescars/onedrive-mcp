@@ -497,7 +497,8 @@ def _download_file(path_or_id: str, download_dir: Path, dest_filename: Optional[
             raise GraphError("Microsoft Graph returned an invalid download URL.")
         resp = requests.get(direct_url, stream=True, timeout=120)
     else:
-        resp = _get(f"{url}/content", stream=True)
+        content_suffix = ":/content" if url.startswith(f"{GRAPH_BASE}/me/drive/root:") else "/content"
+        resp = _get(f"{url}{content_suffix}", stream=True)
 
     total = 0
     with resp:

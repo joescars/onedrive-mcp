@@ -8,8 +8,10 @@ reduces risk but does not make the account data public or non-sensitive.
 ## Read-only enforcement
 
 `graph_client.py` is the only module that communicates with Microsoft Graph.
-Its `_get()` helper hardcodes `requests.get` and asserts that the HTTP function
-has not been replaced with another verb.
+Its `_get()` helper hardcodes `requests.get`. The adjacent assertion compares
+that function with itself; it is not a security boundary and cannot prevent a
+future edit from introducing another network call. Review the tool surface,
+delegated permissions, and regression tests when changing network behavior.
 
 The only other network request streams file content from a pre-authenticated
 Microsoft CDN URL. It is also GET-only and never uploads data.
@@ -23,6 +25,11 @@ The MCP server exposes exactly five tools:
 - `get_drive_info`
 
 There are no upload, edit, delete, move, or rename operations.
+
+The requested `Files.Read` and `Files.Read.All` delegated scopes do not grant
+cloud writes, but access is not confined to one folder. Downloading writes to
+local disk. These constraints apply to this server, not to other tools an
+agent may have or to a process that can modify the server's code.
 
 ## Credentials
 
@@ -105,3 +112,7 @@ policies.
 Review tool approvals and use only accounts and files you intend to expose to
 the configured client. A downloaded file remains on the server host; the tool
 returns its local path rather than embedding its content in the response.
+
+If another tool reads a downloaded document, its contents may also enter the
+model provider's context. Treat instructions in file names or documents as
+untrusted data, not as permission to run commands or disclose other files.

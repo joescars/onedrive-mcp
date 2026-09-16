@@ -29,7 +29,8 @@ OneDrive for Business and SharePoint are outside the project's default scope.
 
 - Linux and Python 3.10 or newer.
 - A personal Microsoft account.
-- A free Azure App Registration configured for device-code authentication.
+- A Microsoft Entra app registration configured for device-code authentication;
+  see the [registration prerequisites](docs/setup.md#1-register-an-azure-application).
 
 Linux is the supported production platform. Windows is suitable for
 development only because POSIX file modes do not establish Windows ACLs.
@@ -63,11 +64,11 @@ download or modify files.
 Complete the quick start before configuring a client. The MCP host starts this
 server when needed; do not leave a separate standalone process running.
 
-| Client | Transport | Guide |
-|---|---|---|
-| VS Code with GitHub Copilot | stdio | [VS Code setup](docs/clients.md#vs-code-with-github-copilot) |
-| Hermes | stdio | [Hermes setup](docs/clients.md#hermes) |
-| Open WebUI | OpenAPI/HTTP via `mcpo` | [Bridge deployment](docs/deployment.md) |
+| Client                      | Transport               | Guide                                                        |
+| --------------------------- | ----------------------- | ------------------------------------------------------------ |
+| VS Code with GitHub Copilot | stdio                   | [VS Code setup](docs/clients.md#vs-code-with-github-copilot) |
+| Hermes                      | stdio                   | [Hermes setup](docs/clients.md#hermes)                       |
+| Open WebUI                  | OpenAPI/HTTP via `mcpo` | [Bridge deployment](docs/deployment.md)                      |
 
 Example VS Code workspace configuration:
 
@@ -88,13 +89,13 @@ Use absolute paths for user-level or remote-user configuration. No tokens or
 
 ## Tools
 
-| Tool | Description |
-|---|---|
-| `search_onedrive(query, top=20, next_link=None)` | Search the drive one page at a time |
-| `list_folder(path='/', top=50, next_link=None)` | List a folder's children |
-| `get_item_metadata(path_or_id)` | Return metadata for one file or folder |
-| `download_file(path_or_id, dest_filename=None)` | Download a file into `DOWNLOAD_DIR` |
-| `get_drive_info()` | Return drive, owner, and quota information |
+| Tool                                             | Description                                |
+| ------------------------------------------------ | ------------------------------------------ |
+| `search_onedrive(query, top=20, next_link=None)` | Search the drive one page at a time        |
+| `list_folder(path='/', top=50, next_link=None)`  | List a folder's children                   |
+| `get_item_metadata(path_or_id)`                  | Return metadata for one file or folder     |
+| `download_file(path_or_id, dest_filename=None)`  | Download a file into `DOWNLOAD_DIR`        |
+| `get_drive_info()`                               | Return drive, owner, and quota information |
 
 Paths such as `/Documents/report.pdf` and raw Graph item IDs are accepted where
 `path_or_id` is documented. Pagination continuations are opaque and must be
@@ -115,7 +116,8 @@ path and metadata, not the file's contents.
 
 ## Security and privacy
 
-- Microsoft Graph access is GET-only and guarded in `graph_client.py`.
+- Microsoft Graph operations use the GET-only helper in `graph_client.py` and
+  read-only delegated scopes; this is not a guarantee against future code changes.
 - The token cache and downloads are stored with owner-only POSIX permissions.
 - Signed Graph download URLs are never returned in tool results or errors.
 - Downloads have configurable per-file and directory-wide limits.
@@ -131,15 +133,15 @@ operational limitations.
 
 ## Documentation
 
-| Guide | Covers |
-|---|---|
-| [Setup](docs/setup.md) | Azure registration, local installation, environment variables, and sign-in |
-| [Client configuration](docs/clients.md) | VS Code, Hermes, and stdio operation |
-| [Tool reference](docs/tools.md) | Tool inputs, response shapes, pagination, and downloads |
-| [Open WebUI deployment](docs/deployment.md) | Authenticated `mcpo` bridge and systemd |
-| [Security](docs/security.md) | Read-only enforcement, local storage, pagination, and privacy |
-| [Development](docs/development.md) | Tests, dependency locks, smoke tests, and project structure |
-| [Troubleshooting](docs/troubleshooting.md) | Common authentication, Graph, client, and dependency errors |
+| Guide                                       | Covers                                                                     |
+| ------------------------------------------- | -------------------------------------------------------------------------- |
+| [Setup](docs/setup.md)                      | Azure registration, local installation, environment variables, and sign-in |
+| [Client configuration](docs/clients.md)     | VS Code, Hermes, and stdio operation                                       |
+| [Tool reference](docs/tools.md)             | Tool inputs, response shapes, pagination, and downloads                    |
+| [Open WebUI deployment](docs/deployment.md) | Authenticated `mcpo` bridge and systemd                                    |
+| [Security](docs/security.md)                | Read-only enforcement, local storage, pagination, and privacy              |
+| [Development](docs/development.md)          | Tests, dependency locks, smoke tests, and project structure                |
+| [Troubleshooting](docs/troubleshooting.md)  | Common authentication, Graph, client, and dependency errors                |
 
 ## Development
 

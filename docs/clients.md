@@ -104,22 +104,23 @@ for current interface details.
 
 ## Hermes
 
-Add the following entry to Hermes's MCP server configuration. Its JSON format
-uses `mcpServers`, unlike VS Code's `servers`.
+Add the following entry under `mcp_servers` in `~/.hermes/config.yaml`.
+Merge it with existing servers rather than replacing the configuration.
+Hermes uses YAML here, unlike VS Code's JSON `servers` configuration.
 
-```json
-{
-  "mcpServers": {
-    "onedrive": {
-      "command": "/path/to/onedrive-mcp/venv/bin/python",
-      "args": ["/path/to/onedrive-mcp/server.py"]
-    }
-  }
-}
+```yaml
+mcp_servers:
+  onedrive:
+    command: "/path/to/onedrive-mcp/venv/bin/python"
+    args: ["/path/to/onedrive-mcp/server.py"]
 ```
 
 Use absolute paths. `server.py` loads the project-local `.env`, so secrets and
 environment values do not belong in the Hermes configuration.
+
+Start a new Hermes session and ask it to call `get_drive_info` before trying a
+download. See the upstream [Hermes MCP guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/)
+for current configuration options.
 
 ## Standalone process
 
@@ -134,6 +135,7 @@ Use `scripts/smoke_test.py` to exercise the real OneDrive integration.
 
 ## Open WebUI
 
-Open WebUI consumes OpenAPI/HTTP tool servers rather than this server's raw
-stdio transport. Use the authenticated [`mcpo` deployment guide](deployment.md)
-instead of pointing Open WebUI or VS Code directly at the wrong transport.
+This server exposes stdio, not an MCP HTTP endpoint. For Open WebUI, use the
+authenticated [`mcpo` deployment guide](deployment.md) to expose it as an
+OpenAPI tool server. Native MCP HTTP support in a client does not make it
+compatible with this server's stdio transport or the bridge's OpenAPI endpoint.

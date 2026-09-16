@@ -247,6 +247,33 @@ def test_forbidden_raises_clean_permission_error():
 # download_file: permissions hardening + size-mismatch detection
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("path_or_id,item_address,content_address", [
+    ("/Documents/foo.pdf", "root:/Documents/foo.pdf", "root:/Documents/foo.pdf:/content"),
+    ("/Documents/report #1.pdf", "root:/Documents/report%20%231.pdf", "root:/Documents/report%20%231.pdf:/content"),
+    ("01FILEID", "items/01FILEID", "items/01FILEID/content"),
+])
+@responses_lib.activate
+def test_download_fallback_uses_graph_content_address(tmp_path, path_or_id, item_address, content_address):
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/{item_address}",
+        json=dict(FILE_ITEM, size=5, **{"@microsoft.graph.downloadUrl": None}),
+        status=200,
+    )
+    responses_lib.add(
+        responses_lib.GET,
+        f"{GRAPH_BASE}/me/drive/{content_address}",
+        body=b"hello",
+        status=200,
+    )
+
+    result = graph_client.download_file(path_or_id, tmp_path / "downloads")
+
+    assert Path(result["local_path"]).read_bytes() == b"hello"
+    assert result["size_bytes"] == 5
+    assert len(responses_lib.calls) == 2
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions; Windows is development-only")
 @responses_lib.activate
 def test_download_file_chmods_dir_and_file_owner_only(tmp_path):
@@ -260,7 +287,7 @@ def test_download_file_chmods_dir_and_file_owner_only(tmp_path):
     )
     responses_lib.add(
         responses_lib.GET,
-        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf:/content",
         body=b"hello",
         status=200,
     )
@@ -284,7 +311,7 @@ def test_download_file_raises_on_size_mismatch(tmp_path):
     )
     responses_lib.add(
         responses_lib.GET,
-        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf:/content",
         body=b"short",
         status=200,
     )
@@ -395,7 +422,7 @@ def test_download_created_owner_only_at_creation(tmp_path):
     )
     responses_lib.add(
         responses_lib.GET,
-        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf:/content",
         body=b"hello",
         status=200,
     )
@@ -422,7 +449,7 @@ def test_download_refuses_to_overwrite_existing(tmp_path):
     )
     responses_lib.add(
         responses_lib.GET,
-        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf:/content",
         body=b"HELLO",
         status=200,
     )
@@ -444,7 +471,7 @@ def test_download_rejects_empty_and_nested_dest_filename(tmp_path):
     )
     responses_lib.add(
         responses_lib.GET,
-        f"{GRAPH_BASE}/me/drive/root:/foo.pdf/content",
+        f"{GRAPH_BASE}/me/drive/root:/foo.pdf:/content",
         body=b"x",
         status=200,
     )

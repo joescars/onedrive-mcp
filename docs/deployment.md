@@ -2,9 +2,9 @@
 
 [Back to README](../README.md)
 
-Open WebUI's Tool Server feature consumes OpenAPI/HTTP rather than MCP over
-stdio. This project uses [`mcpo`](https://github.com/open-webui/mcpo) as an
-authenticated bridge.
+This project exposes MCP over stdio. It uses
+[`mcpo`](https://github.com/open-webui/mcpo) as an authenticated bridge to
+Open WebUI's OpenAPI tool-server integration, not as a native MCP HTTP endpoint.
 
 > [!WARNING]
 > Never expose the bridge without an API key. Anyone who can reach an
@@ -51,6 +51,15 @@ In Open WebUI, add a Tool Server with:
 - **OpenAPI URL:** `http://127.0.0.1:8765` when both services run on the same
   host, or the private bridge address otherwise.
 - **API key:** the `MCPO_API_KEY` value from `.mcpo.env`.
+
+If Open WebUI runs in Docker, `127.0.0.1` refers to its container, not the
+bridge host. Use a private address reachable from that container and bind the
+bridge to the corresponding private interface. Keep authentication enabled;
+do not solve reachability by exposing an unauthenticated public port.
+
+Downloads stay on the bridge host. Open WebUI receives a local path, not an
+attachment or parsed document text. A separate, explicitly configured file
+reader or ingestion workflow is needed to summarize downloaded content.
 
 ## Network security
 

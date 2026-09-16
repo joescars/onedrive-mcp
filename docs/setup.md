@@ -13,13 +13,21 @@ default scope.
   maintenance tools.
 - A personal Microsoft account, such as an outlook.com, hotmail.com, or
   live.com account.
-- A free Azure App Registration.
+- Access to a Microsoft Entra tenant where you can register an application.
 
 Linux is the supported production platform. Windows and other non-POSIX hosts
 are development-only: `chmod` does not establish owner-only Windows ACLs, and
 the plaintext token cache is protected by permissions rather than encryption.
 
 ## 1. Register an Azure application
+
+Check Microsoft's [app-registration prerequisites](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app#prerequisites)
+first. Its guide lists an Azure account with an active subscription, a tenant,
+and application-registration permissions. A personal OneDrive account alone
+does not guarantee access to App registrations. The directory where you
+register the application is separate from the personal account whose files
+you authorize later. This server runs locally and does not deploy an Azure
+compute resource.
 
 1. Open the [Azure Portal](https://portal.azure.com), search for **App
    registrations**, and select **New registration**.
@@ -38,7 +46,12 @@ the plaintext token cache is protected by permissions rather than encryption.
    flows** to **Yes** and save.
 
 No client secret, redirect URI, or administrator consent is needed for a
-personal Microsoft account. You grant consent during device-code sign-in.
+personal Microsoft account's delegated file access. You grant that consent
+during device-code sign-in; permission to create the app registration in its
+directory is a separate prerequisite.
+
+The server currently requests both `Files.Read` and `Files.Read.All`. These
+are read-only scopes, but they are not restricted to one folder.
 
 ## 2. Install the server
 
@@ -62,14 +75,14 @@ chmod 600 .env
 
 ### Environment variables
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `AZURE_CLIENT_ID` | Required | Azure Application (client) ID |
-| `AZURE_TENANT_ID` | `consumers` | Authentication tenant for personal accounts |
-| `TOKEN_CACHE_PATH` | `./token_cache.bin` | Persistent MSAL token cache |
-| `DOWNLOAD_DIR` | `./downloads` | Local download destination |
-| `MAX_DOWNLOAD_BYTES` | `104857600` | Per-file limit in bytes (100 MiB) |
-| `MAX_DOWNLOAD_DIR_BYTES` | `1073741824` | Total download-directory limit (1 GiB) |
+| Variable                 | Default             | Purpose                                     |
+| ------------------------ | ------------------- | ------------------------------------------- |
+| `AZURE_CLIENT_ID`        | Required            | Azure Application (client) ID               |
+| `AZURE_TENANT_ID`        | `consumers`         | Authentication tenant for personal accounts |
+| `TOKEN_CACHE_PATH`       | `./token_cache.bin` | Persistent MSAL token cache                 |
+| `DOWNLOAD_DIR`           | `./downloads`       | Local download destination                  |
+| `MAX_DOWNLOAD_BYTES`     | `104857600`         | Per-file limit in bytes (100 MiB)           |
+| `MAX_DOWNLOAD_DIR_BYTES` | `1073741824`        | Total download-directory limit (1 GiB)      |
 
 Relative cache and download paths resolve from the project directory, not the
 launching process's working directory.
