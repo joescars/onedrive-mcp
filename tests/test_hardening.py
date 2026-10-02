@@ -75,6 +75,13 @@ def test_graph_error_body_is_not_exposed():
 
 
 @responses.activate
+def test_graph_request_uses_bearer_access_token():
+    responses.get(f"{graph.GRAPH_BASE}/me/drive", json={"id": "drive"})
+    assert graph.get_drive_info()["drive_id"] == "drive"
+    assert responses.calls[0].request.headers["Authorization"] == "Bearer test-token"
+
+
+@responses.activate
 def test_invalid_json_is_sanitized():
     responses.get(f"{graph.GRAPH_BASE}/me/drive", status=200, body="SECRET-not-json")
     with pytest.raises(graph.GraphError, match="unreadable") as failure:
