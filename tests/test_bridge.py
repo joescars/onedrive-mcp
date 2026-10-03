@@ -17,7 +17,9 @@ def bridge_environment(monkeypatch):
 
 def test_missing_api_key_refuses_start(capsys):
     assert bridge.main() == 1
-    assert "MCPO_API_KEY is not set" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "MCPO_API_KEY is not set" in error
+    assert "docs/deployment.md" in error
 
 
 @pytest.mark.parametrize("port", ["bad", "0", "65536"])

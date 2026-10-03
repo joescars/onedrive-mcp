@@ -78,7 +78,7 @@ def main() -> int:
             "MCPO_API_KEY is not set. Generate one and store it in a "
             "0600 env file (never in argv or shell history):\n"
             '  python3 -c "import secrets; print(secrets.token_urlsafe(32))"\n'
-            "See README.md §6 for the full runbook.",
+            "See docs/deployment.md for the full runbook.",
             file=sys.stderr,
         )
         return 1

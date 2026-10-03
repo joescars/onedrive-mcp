@@ -52,6 +52,7 @@ Install the maintenance tools and regenerate locks in dependency order:
 ./venv/bin/python -m uv pip compile requirements-bridge.txt --universal --python-version 3.11 --generate-hashes --constraint requirements.lock --output-file requirements-bridge.lock
 ./venv/bin/python -m uv pip compile requirements-dev.txt --universal --python-version 3.11 --generate-hashes --constraint requirements-bridge.lock --output-file requirements-dev.lock
 ./venv/bin/pip install --require-hashes -r requirements-dev.lock
+./venv/bin/python -m ruff check .
 ./venv/bin/python -m pytest -v
 ./venv/bin/python -m pip_audit --local
 ```
@@ -90,6 +91,7 @@ onedrive-mcp/
 - Preserve the GET-only Microsoft Graph invariant.
 - Keep Graph semantics in `graph_client.py`, authentication in `auth.py`, and
   MCP response handling in `server.py`.
+- Run Ruff before tests to catch basic static errors and unused imports.
 - Add mocked tests for changes to retry behavior, response shaping,
   pagination, downloads, or error handling.
 - Verify the full pytest suite and the real stdio handshake before completing

@@ -58,6 +58,7 @@ are read-only scopes, but they are not restricted to one folder.
 ```bash
 git clone https://github.com/joescars/onedrive-mcp.git
 cd onedrive-mcp
+python3 --version  # must report Python 3.10 or newer
 python3 -m venv venv
 ./venv/bin/pip install --require-hashes -r requirements.lock
 cp .env.example .env
@@ -66,6 +67,8 @@ cp .env.example .env
 If the repository is already present, skip `git clone` and start from its
 directory. Keep the checkout, virtual environment, token cache, and downloads
 on a local Linux filesystem rather than a network share or cloud-synced folder.
+If `python3` is older than 3.10, select a newer interpreter explicitly when
+creating the virtual environment.
 
 Edit `.env`, replace the placeholder `AZURE_CLIENT_ID`, and restrict access:
 
