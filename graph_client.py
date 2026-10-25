@@ -124,7 +124,8 @@ def _get(url: str, *, params: Optional[dict] = None, stream: bool = False) -> re
         if status == 401:
             raise GraphError(
                 "Microsoft Graph rejected the access token after a refresh attempt. "
-                "Re-run 'python scripts/setup_auth.py' to sign in again."
+                "Re-run `onedrive-mcp-setup` (or `python "
+                "scripts/setup_auth.py` from a source checkout) to sign in again."
             )
         if status == 403:
             raise GraphError(

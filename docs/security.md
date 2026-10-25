@@ -38,12 +38,15 @@ plaintext protected by owner-only POSIX permissions and must never be
 committed, logged, or shared.
 
 Cache updates use owner-only temporary files, atomic replacement, and a
-cross-process lock. Relative `TOKEN_CACHE_PATH` values resolve from the
-project directory rather than the process's working directory.
+cross-process lock. The default cache and downloads live in a stable per-user
+data directory, not beside installed code. Relative `TOKEN_CACHE_PATH` and
+`DOWNLOAD_DIR` overrides resolve from that data directory rather than the
+process's working directory.
 
-The project-local `.env` contains configuration rather than bearer credentials
-by default, but it is also restricted to mode `0600` because environment files
-commonly gain sensitive values over time.
+The per-user config `.env` contains configuration rather than bearer
+credentials by default, but it is restricted to mode `0600` because
+configuration files commonly gain sensitive values over time. Existing
+source checkouts may continue to use a project-local `.env` until migrated.
 
 ## Platform security boundary
 

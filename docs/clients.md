@@ -4,7 +4,8 @@
 
 The server uses MCP over stdio. Complete [setup and sign-in](setup.md) first;
 the running server can refresh cached credentials but cannot perform an
-interactive sign-in from chat.
+interactive sign-in from chat. For an npm/`npx` installation, see the separate
+[npm launcher guide](npm.md).
 
 A client starts the server process when needed. Running `server.py` separately
 does not create a service for stdio clients to connect to.
@@ -94,7 +95,7 @@ still applies.
 
 Do not put tokens or `.env` values in `mcp.json`. For startup errors, open
 **MCP: List Servers > onedrive > Show Output**. Restart the server after
-changing `.env`.
+changing the per-user `.env`.
 
 See the official [VS Code MCP server
 guide](https://code.visualstudio.com/docs/agent-customization/mcp-servers) and
@@ -115,8 +116,9 @@ mcp_servers:
     args: ["/path/to/onedrive-mcp/server.py"]
 ```
 
-Use absolute paths. `server.py` loads the project-local `.env`, so secrets and
-environment values do not belong in the Hermes configuration.
+Use absolute paths. The server loads its per-user config `.env` and stores
+its cache/downloads in the per-user data directory; secrets and environment
+values do not belong in the Hermes configuration.
 
 Start a new Hermes session and ask it to call `get_drive_info` before trying a
 download. See the upstream [Hermes MCP guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/)
@@ -144,10 +146,10 @@ can still call them through codemode scripts or `tool_search`.
 
 Start pi and use `/mcp` to inspect the connection and tools. If you added or
 changed the server while pi was already running, run `/reload`. The server
-loads `.env` from its own project directory, so do not put Azure credentials
-or token-cache paths in pi's MCP configuration. Keep the checkout and its
-credential files private; OneDrive search results and metadata will be sent
-to the model when tools are used.
+loads `.env` from its per-user config directory and stores persistent data
+outside the package directory, so do not put Azure credentials or token-cache
+paths in pi's MCP configuration. Keep the config directory private; OneDrive
+search results and metadata will be sent to the model when tools are used.
 
 ## Standalone process
 

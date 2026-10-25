@@ -1,0 +1,41 @@
+{
+  "name": "@joescars/onedrive-mcp",
+  "version": "0.1.0",
+  "description": "Read-only MCP server for personal Microsoft OneDrive accounts",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "onedrive-mcp": "bin/onedrive-mcp.mjs",
+    "onedrive-mcp-setup": "bin/onedrive-mcp-setup.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "onedrive",
+    "microsoft-graph",
+    "read-only"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joescars/onedrive-mcp.git"
+  },
+  "homepage": "https://github.com/joescars/onedrive-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/joescars/onedrive-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

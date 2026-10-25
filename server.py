@@ -12,32 +12,22 @@ HTTP GET against Microsoft Graph (enforced in graph_client.py).
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Annotated, Optional
-
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 import graph_client
+from auth import get_download_dir
 from graph_client import GraphError, GraphNotFoundError
-
-load_dotenv(Path(__file__).resolve().parent / ".env")
 
 mcp = FastMCP("onedrive-readonly")
 PageSize = Annotated[int, Field(ge=1, le=graph_client.MAX_PAGE_SIZE, strict=True)]
 
 
 def _download_dir() -> Path:
-    raw = os.environ.get("DOWNLOAD_DIR", "./downloads")
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        # Resolve relative to this file's directory, not the launching
-        # process's cwd (Hermes/other MCP hosts often launch with an
-        # unrelated cwd — see auth.py's PROJECT_ROOT for the same fix).
-        path = Path(__file__).resolve().parent / path
-    return path.resolve()
+    """Use stable per-user storage, not the MCP package installation path."""
+    return get_download_dir()
 
 
 def _friendly_error(exc: Exception) -> dict:
@@ -142,5 +132,10 @@ def get_drive_info() -> dict:
         return _friendly_error(exc)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the MCP server over stdio (also used by the installed console script)."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

@@ -92,7 +92,8 @@ read-only while allowing writes only under `/var/lib/onedrive-mcp`.
    sudo install -d -m 700 -o your-username -g your-username /var/lib/onedrive-mcp/downloads
    ```
 
-4. In the project's `.env`, set:
+4. In the service account's per-user config file (normally
+   `~/.config/onedrive-mcp/.env`), set:
 
    ```dotenv
    TOKEN_CACHE_PATH=/var/lib/onedrive-mcp/token_cache.bin

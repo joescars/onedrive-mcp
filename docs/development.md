@@ -23,7 +23,7 @@ The tests mock Graph and MSAL traffic and cover:
 POSIX permission checks run on Linux and are skipped on Windows. Passing
 Windows tests is not evidence that credentials have secure Windows ACLs.
 
-GitHub Actions tests Linux on Python 3.10, 3.12, and 3.14, plus Windows on
+GitHub Actions tests Linux on Python 3.11, 3.12, and 3.14, plus Windows on
 Python 3.12. It also runs an installed-dependency audit on pushes, pull
 requests, and a weekly schedule.
 
@@ -48,18 +48,40 @@ Install the maintenance tools and regenerate locks in dependency order:
 
 ```bash
 ./venv/bin/pip install --require-hashes -r requirements-dev.lock
-./venv/bin/python -m uv pip compile requirements.txt --universal --python-version 3.10 --generate-hashes --output-file requirements.lock
+./venv/bin/python -m uv pip compile requirements.txt --universal --python-version 3.11 --generate-hashes --output-file requirements.lock
+./venv/bin/python -m uv pip compile requirements-test.txt --universal --python-version 3.11 --generate-hashes --constraint requirements.lock --output-file requirements-test.lock
 ./venv/bin/python -m uv pip compile requirements-bridge.txt --universal --python-version 3.11 --generate-hashes --constraint requirements.lock --output-file requirements-bridge.lock
 ./venv/bin/python -m uv pip compile requirements-dev.txt --universal --python-version 3.11 --generate-hashes --constraint requirements-bridge.lock --output-file requirements-dev.lock
 ./venv/bin/pip install --require-hashes -r requirements-dev.lock
 ./venv/bin/python -m ruff check .
 ./venv/bin/python -m pytest -v
 ./venv/bin/python -m pip_audit --local
+npm test
+npm pack --dry-run
 ```
 
 Add `--upgrade` to the compile commands to refresh already-locked versions.
 Review all lockfile changes together and retain the `mcp<2.0.0` constraint
 unless the server import and stdio integration are updated for MCP 2.x.
+
+## Distribution release
+
+`pyproject.toml` and `package.json` must use the same version; the packaging
+test enforces this. Build and inspect the Python artifacts first, publish the
+Python distribution to PyPI, then publish the npm launcher so its exact
+`uvx --from ...==<version>` target already exists:
+
+```bash
+uv build
+npm pack --dry-run
+# After reviewing artifacts and confirming registry ownership:
+uv publish
+npm publish --access public
+```
+
+Publishing is intentionally manual and requires authorized PyPI/npm accounts.
+Do not publish an npm version before the matching Python distribution is
+available. The repository CI only builds/tests artifacts; it does not publish.
 
 ## Project structure
 
@@ -68,6 +90,9 @@ onedrive-mcp/
   server.py                     MCP server and five tool definitions
   graph_client.py               GET-only Microsoft Graph client
   auth.py                       MSAL device-code flow and token cache
+  pyproject.toml                Python distribution metadata and console scripts
+  package.json                  Version-pinned npm launchers
+  bin/                          npm MCP and interactive setup commands
   scripts/
     setup_auth.py               Interactive one-time sign-in
     smoke_test.py               Live integration check

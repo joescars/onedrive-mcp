@@ -5,6 +5,10 @@ token_cache.bin.lock
 .mcpo.env
 venv/
 .venv/
+build/
+dist/
+*.whl
+*.tar.gz
 __pycache__/
 *.pyc
 downloads/

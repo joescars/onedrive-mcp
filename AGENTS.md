@@ -64,25 +64,24 @@ deploy/
   onedrive-mcpo.service   systemd template for the mcpo HTTP bridge.
 ```
 
-## Critical lesson: never assume cwd
+## Never tie persistent state to cwd or the installation directory
 
-**This project is launched by MCP hosts (Hermes, `mcp dev`, `mcpo`, etc.)
-with an arbitrary working directory — never assume it's the project root.**
+**MCP hosts (Hermes, pi, `mcpo`, etc.) launch with arbitrary working
+directories, and package managers may install code in ephemeral or read-only
+locations.** Do not store user configuration, token caches, or downloads next
+to source files or relative to `os.getcwd()`.
 
-This bit us once already (see git history / commit "Fix .env and
-relative-path resolution to use script dir, not launcher cwd"): `auth.py`
-called `load_dotenv()` with no argument, and `TOKEN_CACHE_PATH`/`DOWNLOAD_DIR`
-defaulted to relative paths like `./token_cache.bin`. Both resolved against
-whatever directory the *launching process* happened to have as its cwd (e.g.
-Hermes's own install dir), not this repo — so `.env` silently failed to load
-and the token cache appeared "missing" even after a successful sign-in.
+The application uses a stable per-user config directory for `.env` and a
+stable data directory for token caches and downloads. Defaults honor XDG on
+Linux and use platform user-data locations on Windows/macOS; the
+`ONEDRIVE_MCP_CONFIG_DIR` and `ONEDRIVE_MCP_DATA_DIR` environment variables
+can override them. Relative data paths resolve from the stable data directory.
+The checkout-local `.env` is only a backwards-compatibility fallback.
 
-**Rule going forward**: any code in this repo that reads `.env` or resolves a
-relative default path MUST anchor it to `Path(__file__).resolve().parent`
-(or the shared `auth.PROJECT_ROOT` constant), never to `os.getcwd()` /
-bare relative `Path("./...")`. If you add a new module that needs `.env` or a
-default file path, follow the existing pattern in `auth.py` / `server.py`
-rather than reintroducing `load_dotenv()` with no arguments.
+**Rule going forward**: use the shared helpers in `auth.py` for runtime config
+and data paths. Only use `Path(__file__).resolve().parent` for locating
+packaged code/resources; never use it as the default location for persistent
+user state.
 
 ## Testing conventions
 
@@ -105,7 +104,7 @@ rather than reintroducing `load_dotenv()` with no arguments.
 
 ## Environment / dependencies
 
-- Python 3.10+ (developed against 3.12). Use the project's own `venv/`, not
+- Python 3.11+ (developed against 3.12). Use the project's own `venv/`, not
   system Python.
 - Linux is the secure deployment target. Windows is development-only; do not
   claim POSIX modes implement Windows ACLs. Optional bridge/maintenance tools
@@ -115,12 +114,12 @@ rather than reintroducing `load_dotenv()` with no arguments.
 - `requirements.txt` pins `mcp<2.0.0` deliberately — `mcp` 2.x moved/renamed
   `FastMCP`. Do not upgrade past 2.0 without updating `server.py`'s import
   and verifying the stdio handshake still works.
-- `.env` (git-ignored) holds `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` (default
-  `consumers`), `TOKEN_CACHE_PATH`, `DOWNLOAD_DIR`. Never commit real values;
-  `.env.example` documents the shape with placeholders.
-- `token_cache.bin` (git-ignored, chmod 600) holds MSAL's serialized token
-  cache — treat it like a credential file. Never read/print its contents in
-  logs or agent output.
+- The per-user config `.env` holds `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`
+  (default `consumers`), and optional path/limit overrides. Never commit real
+  values; `.env.example` documents the shape with placeholders.
+- The per-user data directory holds MSAL's serialized token cache (owner-only
+  permissions). Treat it like a credential file. Never read/print its
+  contents in logs or agent output.
 
 ## Git workflow for this repo
 

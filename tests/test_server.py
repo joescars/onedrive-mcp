@@ -9,6 +9,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+import auth
 import graph_client
 import server
 
@@ -97,5 +98,7 @@ def test_search_preserves_fields_and_exposes_pagination(monkeypatch):
 
 def test_download_dir_is_independent_of_cwd(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", False)
+    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "app-data"))
     monkeypatch.setenv("DOWNLOAD_DIR", "downloads")
-    assert server._download_dir() == (Path(server.__file__).resolve().parent / "downloads")
+    assert server._download_dir() == (tmp_path / "app-data" / "downloads").resolve()
