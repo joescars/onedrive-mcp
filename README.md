@@ -19,8 +19,8 @@ Microsoft OneDrive account.
 - Download files to a controlled local directory without overwriting existing
   files.
 - Refresh cached Microsoft credentials without interactive sign-in.
-- Connect directly to VS Code or Hermes over stdio, or to Open WebUI through
-  an authenticated `mcpo` bridge.
+- Connect directly to VS Code, Hermes, or pi over stdio, or to Open WebUI
+  through an authenticated `mcpo` bridge.
 
 This server targets **personal Microsoft accounts and consumer OneDrive**.
 OneDrive for Business and SharePoint are outside the project's default scope.
@@ -68,6 +68,7 @@ server when needed; do not leave a separate standalone process running.
 | --------------------------- | ----------------------- | ------------------------------------------------------------ |
 | VS Code with GitHub Copilot | stdio                   | [VS Code setup](docs/clients.md#vs-code-with-github-copilot) |
 | Hermes                      | stdio                   | [Hermes setup](docs/clients.md#hermes)                       |
+| pi (pi.dev)                 | stdio                   | [pi setup](docs/clients.md#pi-pi-dev)                         |
 | Open WebUI                  | OpenAPI/HTTP via `mcpo` | [Bridge deployment](docs/deployment.md)                      |
 
 Example VS Code workspace configuration:
@@ -136,7 +137,7 @@ operational limitations.
 | Guide                                       | Covers                                                                     |
 | ------------------------------------------- | -------------------------------------------------------------------------- |
 | [Setup](docs/setup.md)                      | Azure registration, local installation, environment variables, and sign-in |
-| [Client configuration](docs/clients.md)     | VS Code, Hermes, and stdio operation                                       |
+| [Client configuration](docs/clients.md)     | VS Code, Hermes, pi, and stdio operation                                    |
 | [Tool reference](docs/tools.md)             | Tool inputs, response shapes, pagination, and downloads                    |
 | [Open WebUI deployment](docs/deployment.md) | Authenticated `mcpo` bridge and systemd                                    |
 | [Security](docs/security.md)                | Read-only enforcement, local storage, pagination, and privacy              |

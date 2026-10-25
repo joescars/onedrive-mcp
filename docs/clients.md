@@ -122,6 +122,33 @@ Start a new Hermes session and ask it to call `get_drive_info` before trying a
 download. See the upstream [Hermes MCP guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/)
 for current configuration options.
 
+## pi (pi.dev)
+
+Complete [setup and sign-in](setup.md) first, and install the `pi` CLI as
+shown in the [pi documentation](https://pi.dev/). Register the server from a
+shell with the `pi` command:
+
+```bash
+pi mcp add onedrive --exposure direct -- \
+  /home/you/onedrive-mcp/venv/bin/python \
+  /home/you/onedrive-mcp/server.py
+pi mcp list
+```
+
+Replace `/home/you/onedrive-mcp` with the absolute path to your checkout.
+This adds the server to your user-level `~/.pi/agent/mcp.json`, making it
+available across your pi projects. `--exposure direct` makes all five
+OneDrive tools directly available to the model. If you omit that option, pi's
+default `codemode` exposure keeps the tools out of the direct tool list; pi
+can still call them through codemode scripts or `tool_search`.
+
+Start pi and use `/mcp` to inspect the connection and tools. If you added or
+changed the server while pi was already running, run `/reload`. The server
+loads `.env` from its own project directory, so do not put Azure credentials
+or token-cache paths in pi's MCP configuration. Keep the checkout and its
+credential files private; OneDrive search results and metadata will be sent
+to the model when tools are used.
+
 ## Standalone process
 
 For a simple startup check:
