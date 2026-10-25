@@ -194,8 +194,9 @@ def _cache_transaction() -> Iterator[None]:
     except (OSError, ValueError):
         raise AuthConfigError(
             "Could not read or persist the token cache. Check its permissions and "
-            "available disk space; if the cache is corrupt, run scripts/setup_auth.py "
-            "with a new TOKEN_CACHE_PATH."
+            "available disk space; if the cache is corrupt, run `onedrive-mcp-setup` "
+            "(or scripts/setup_auth.py from a source checkout) with a new "
+            "TOKEN_CACHE_PATH."
         ) from None
 
 
@@ -219,8 +220,8 @@ def _run_device_code_flow() -> dict:
     """Interactive, one-time login. Prints instructions to stdout.
 
     Returns the MSAL token result dict on success. Raises AuthConfigError on
-    failure. This function is intended to be called from
-    scripts/setup_auth.py, not from the MCP server itself.
+    failure. This function is intended to be called from the one-time setup
+    command, not from the MCP server itself.
     """
     cache = _load_cache()
     app = build_app(cache)
@@ -261,8 +262,8 @@ def get_access_token(*, force_refresh: bool = False) -> str:
     """Silently acquire (and transparently refresh) an access token.
 
     Raises AuthConfigError with a human-readable message if there is no
-    usable cached account / refresh token, instructing the caller to run
-    scripts/setup_auth.py again.
+    usable cached account / refresh token, instructing the caller to run the
+    one-time setup command again.
     """
     with _cache_transaction():
         return _get_access_token(force_refresh=force_refresh)
@@ -274,8 +275,9 @@ def _get_access_token(*, force_refresh: bool) -> str:
     accounts = app.get_accounts()
     if not accounts:
         raise AuthConfigError(
-            "No signed-in account found in the token cache. Run "
-            "'python scripts/setup_auth.py' once to sign in via device code."
+            "No signed-in account found in the token cache. Run `onedrive-mcp-setup` "
+            "(or `python scripts/setup_auth.py` from a source checkout) once "
+            "to sign in via device code."
         )
 
     result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=force_refresh)
@@ -285,7 +287,8 @@ def _get_access_token(*, force_refresh: bool) -> str:
         raise AuthConfigError(
             "Could not silently refresh the Microsoft Graph access token "
             "(it may have been revoked or expired beyond refresh). Re-run "
-            "'python scripts/setup_auth.py' to sign in again."
+            "`onedrive-mcp-setup` (or `python scripts/setup_auth.py` from a "
+            "source checkout) to sign in again."
         )
 
     return result["access_token"]

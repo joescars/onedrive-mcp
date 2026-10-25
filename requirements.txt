@@ -2,7 +2,5 @@ mcp>=1.2.0,<2.0.0
 msal>=1.28.0
 requests>=2.31.0
 python-dotenv>=1.0.1
-pytest>=8.0.0
-responses>=0.25.0
 # 4.2.1 fixes known vulnerabilities; fixed releases require Python 3.11+.
 filelock>=4.2.1

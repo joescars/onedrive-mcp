@@ -47,7 +47,9 @@ compute resource.
 No client secret, redirect URI, or administrator consent is needed for a
 personal Microsoft account's delegated file access. You grant that consent
 during device-code sign-in; permission to create the app registration in its
-directory is a separate prerequisite.
+directory is a separate prerequisite. Each deployment supplies its own
+Application (client) ID; this project does not distribute a shared client ID
+or any client secret.
 
 The server currently requests both `Files.Read` and `Files.Read.All`. These
 are read-only scopes, but they are not restricted to one folder.

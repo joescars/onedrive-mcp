@@ -27,13 +27,13 @@ OneDrive for Business and SharePoint are outside the project's default scope.
 
 ## Requirements
 
-- Linux and Python 3.11 or newer.
-- A personal Microsoft account.
-- A Microsoft Entra app registration configured for device-code authentication;
-  see the [registration prerequisites](docs/setup.md#1-register-an-azure-application).
-
-Linux is the supported production platform. Windows is suitable for
-development only because POSIX file modes do not establish Windows ACLs.
+- Linux is the supported production platform. Windows is suitable for
+  development only because POSIX file modes do not establish Windows ACLs.
+- Source installs require Python 3.11 or newer. The optional npm launcher
+  requires Node.js 18+ and Astral `uv` (which can provision Python).
+- A personal Microsoft account and a Microsoft Entra app registration
+  configured for device-code authentication; see the
+  [registration prerequisites](docs/setup.md#1-register-an-azure-application).
 
 ## Quick start
 
@@ -74,6 +74,7 @@ server when needed; do not leave a separate standalone process running.
 | VS Code with GitHub Copilot | stdio                   | [VS Code setup](docs/clients.md#vs-code-with-github-copilot) |
 | Hermes                      | stdio                   | [Hermes setup](docs/clients.md#hermes)                       |
 | pi (pi.dev)                 | stdio                   | [pi setup](docs/clients.md#pi-pi-dev)                         |
+| npx launcher                | stdio                   | [npm installation](docs/npm.md)                               |
 | Open WebUI                  | OpenAPI/HTTP via `mcpo` | [Bridge deployment](docs/deployment.md)                      |
 
 Example VS Code workspace configuration:
@@ -143,6 +144,7 @@ operational limitations.
 | ------------------------------------------- | -------------------------------------------------------------------------- |
 | [Setup](docs/setup.md)                      | Azure registration, local installation, environment variables, and sign-in |
 | [Client configuration](docs/clients.md)     | VS Code, Hermes, pi, and stdio operation                                    |
+| [npm installation](docs/npm.md)              | Version-pinned npm launcher and separate device-code setup                  |
 | [Tool reference](docs/tools.md)             | Tool inputs, response shapes, pagination, and downloads                    |
 | [Open WebUI deployment](docs/deployment.md) | Authenticated `mcpo` bridge and systemd                                    |
 | [Security](docs/security.md)                | Read-only enforcement, local storage, pagination, and privacy              |
@@ -160,3 +162,9 @@ Run the credential-free test suite:
 Tests mock Microsoft Graph and MSAL traffic; they do not access a real
 OneDrive account. See [Development](docs/development.md) for maintenance and
 contribution details.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). It is an
+independent community project and is not affiliated with or endorsed by
+Microsoft.

@@ -132,5 +132,10 @@ def get_drive_info() -> dict:
         return _friendly_error(exc)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the MCP server over stdio (also used by the installed console script)."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

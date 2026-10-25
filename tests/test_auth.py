@@ -63,16 +63,26 @@ def test_relative_cache_path_is_independent_of_cwd(monkeypatch, tmp_path):
     assert auth.get_token_cache_path() == (tmp_path / "app-data" / "state" / "cache.bin").resolve()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux XDG data-directory behavior")
 def test_default_user_data_directory_honors_xdg(monkeypatch, tmp_path):
     monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     assert auth.get_user_data_dir() == (tmp_path / "xdg-data" / "onedrive-mcp").resolve()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux XDG data-directory behavior")
 def test_empty_xdg_value_falls_back_to_home(monkeypatch):
     monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", "")
     assert auth.get_user_data_dir() == (Path.home() / ".local" / "share" / "onedrive-mcp").resolve()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows user-data directory behavior")
+def test_default_user_data_directory_uses_local_appdata(monkeypatch, tmp_path):
+    monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming-app-data"))
+    assert auth.get_user_data_dir() == (tmp_path / "local-app-data" / "onedrive-mcp").resolve()
 
 
 def test_default_cache_and_download_paths_use_user_data_dir(monkeypatch, tmp_path):
@@ -106,7 +116,7 @@ def test_missing_account_is_actionable(monkeypatch):
     app = Mock()
     app.get_accounts.return_value = []
     monkeypatch.setattr(auth, "build_app", Mock(return_value=app))
-    with pytest.raises(auth.AuthConfigError, match="setup_auth.py"):
+    with pytest.raises(auth.AuthConfigError, match="onedrive-mcp-setup"):
         auth.get_access_token()
 
 
@@ -229,7 +239,8 @@ def test_user_config_is_loaded_from_arbitrary_cwd(tmp_path):
         timeout=10,
     )
     assert result.stdout.strip() == "config-client-id"
-    assert (config_dir / ".env").stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert (config_dir / ".env").stat().st_mode & 0o777 == 0o600
 
 
 def test_auth_transport_errors_are_sanitized(monkeypatch):

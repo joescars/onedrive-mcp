@@ -4,7 +4,8 @@
 
 The server uses MCP over stdio. Complete [setup and sign-in](setup.md) first;
 the running server can refresh cached credentials but cannot perform an
-interactive sign-in from chat.
+interactive sign-in from chat. For an npm/`npx` installation, see the separate
+[npm launcher guide](npm.md).
 
 A client starts the server process when needed. Running `server.py` separately
 does not create a service for stdio clients to connect to.
