@@ -66,22 +66,48 @@ unless the server import and stdio integration are updated for MCP 2.x.
 
 ## Distribution release
 
-`pyproject.toml` and `package.json` must use the same version; the packaging
-test enforces this. Build and inspect the Python artifacts first, publish the
-Python distribution to PyPI, then publish the npm launcher so its exact
-`uvx --from ...==<version>` target already exists:
+`pyproject.toml` and `package.json` must use the same version. The
+`.github/workflows/publish.yml` workflow checks this against the GitHub release
+tag (`v<version>`) and builds/validates both distributions.
+
+Use **Actions → Publish packages → Run workflow** for a validation-only dry
+run. It builds the Python wheel and sdist, checks them with Twine, runs the npm
+tests, and runs `npm pack --dry-run`; it does not publish. Publishing is
+triggered only when a GitHub Release is published.
+
+In GitHub repository settings, create environments named `pypi` and `npm`
+before publishing. Protect them with authorized reviewers and limit deployments
+to release tags such as `v*` so an arbitrary workflow run cannot publish.
+
+Configure the PyPI GitHub Actions Trusted Publisher before publishing the
+first Python release. For an unpublished PyPI project, add a pending publisher
+with project `joescars-onedrive-mcp`, owner `joescars`, repository
+`onedrive-mcp`, workflow `publish.yml`, and environment `pypi`. The first
+published release converts it to a normal publisher; a pending publisher does
+not reserve the project name.
+
+npm Trusted Publishing is configured on an existing npm package, so the first
+npm release is a one-time bootstrap. For `0.1.0`, publish Python through the
+GitHub release workflow, confirm it is available on PyPI, then publish the npm
+package from an authorized account:
 
 ```bash
-uv build
-npm pack --dry-run
-# After reviewing artifacts and confirming registry ownership:
-uv publish
+npm login
 npm publish --access public
 ```
 
-Publishing is intentionally manual and requires authorized PyPI/npm accounts.
-Do not publish an npm version before the matching Python distribution is
-available. The repository CI only builds/tests artifacts; it does not publish.
+After `@joescars/onedrive-mcp@0.1.0` exists, add its npm Trusted Publisher for
+GitHub user `joescars`, repository `onedrive-mcp`, workflow `publish.yml`, and
+environment `npm`. Configure it shortly before the next release: npm currently
+requires a new publisher configuration to complete its first successful
+publish within two days. The workflow intentionally skips npm publishing for
+`v0.1.0`; later releases publish to PyPI first, wait for the matching Python
+version to appear, and then publish npm using OIDC. No registry write tokens
+are stored in GitHub Actions.
+
+Never publish an npm version before the matching Python distribution is
+available. Registry versions are immutable; use a new matching version to
+correct a release.
 
 ## Project structure
 
@@ -109,6 +135,7 @@ onedrive-mcp/
   requirements*.txt            Dependency inputs
   requirements*.lock           Hash-locked dependencies
   .github/workflows/ci.yml      Tests and dependency audit
+  .github/workflows/publish.yml Release validation and OIDC publishing
 ```
 
 ## Change guidelines
