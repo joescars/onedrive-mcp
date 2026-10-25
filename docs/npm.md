@@ -11,10 +11,10 @@ before npm Trusted Publishing can be configured, are in
 [Development: Distribution release](development.md#distribution-release).
 
 > [!NOTE]
-> The `npx` command is installable only when matching `0.1.1` releases
-> are published to both npm (`@joescars/onedrive-mcp`) and PyPI
-> (`joescars-onedrive-mcp`). The launcher pins the Python distribution to the
-> same exact version as the npm package.
+> The launcher requires a matching Python release on PyPI for every npm
+> version. The setup command uses npm's `latest` tag for convenience; for the
+> persistent MCP client configuration, pin an exact npm version so upgrades
+> are intentional.
 
 ## Requirements
 
@@ -48,7 +48,7 @@ default uses `$XDG_CONFIG_HOME/onedrive-mcp` or `~/.config/onedrive-mcp`.
 Start the separate interactive device-code flow:
 
 ```bash
-npx --yes --package @joescars/onedrive-mcp@0.1.1 onedrive-mcp-setup
+npx --yes --package @joescars/onedrive-mcp@latest onedrive-mcp-setup
 ```
 
 The setup command streams the Microsoft device-code prompt in the terminal
