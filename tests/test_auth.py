@@ -55,10 +55,39 @@ def test_get_token_cache_path_expands(monkeypatch, tmp_path):
     assert auth.get_token_cache_path() == (tmp_path / "cache.bin").resolve()
 
 
-def test_cache_path_is_independent_of_cwd(monkeypatch, tmp_path):
+def test_relative_cache_path_is_independent_of_cwd(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", False)
+    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "app-data"))
     monkeypatch.setenv("TOKEN_CACHE_PATH", "state/cache.bin")
-    assert auth.get_token_cache_path() == (auth.PROJECT_ROOT / "state" / "cache.bin").resolve()
+    assert auth.get_token_cache_path() == (tmp_path / "app-data" / "state" / "cache.bin").resolve()
+
+
+def test_default_user_data_directory_honors_xdg(monkeypatch, tmp_path):
+    monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    assert auth.get_user_data_dir() == (tmp_path / "xdg-data" / "onedrive-mcp").resolve()
+
+
+def test_empty_xdg_value_falls_back_to_home(monkeypatch):
+    monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", "")
+    assert auth.get_user_data_dir() == (Path.home() / ".local" / "share" / "onedrive-mcp").resolve()
+
+
+def test_default_cache_and_download_paths_use_user_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", False)
+    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "app-data"))
+    monkeypatch.delenv("TOKEN_CACHE_PATH", raising=False)
+    monkeypatch.delenv("DOWNLOAD_DIR", raising=False)
+    assert auth.get_token_cache_path() == (tmp_path / "app-data" / "token_cache.bin").resolve()
+    assert auth.get_download_dir() == (tmp_path / "app-data" / "downloads").resolve()
+
+
+def test_legacy_checkout_env_keeps_relative_cache_location(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", True)
+    monkeypatch.setenv("TOKEN_CACHE_PATH", "token_cache.bin")
+    assert auth.get_token_cache_path() == (auth.PROJECT_ROOT / "token_cache.bin").resolve()
 
 
 @pytest.mark.parametrize("force_refresh", [False, True])
@@ -132,6 +161,16 @@ def test_cache_lock_timeout_is_actionable(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem mode guarantee")
+def test_default_data_directory_is_owner_only(monkeypatch, tmp_path):
+    data_dir = tmp_path / "private-data"
+    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("TOKEN_CACHE_PATH", raising=False)
+    with auth._cache_transaction():
+        pass
+    assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem mode guarantee")
 def test_atomic_cache_created_owner_only_even_when_old_file_is_public():
     path = auth.get_token_cache_path()
     path.write_text("old-state", encoding="utf-8")
@@ -170,6 +209,27 @@ for _ in range(10):
                 process.kill()
                 process.wait()
     assert json.loads(auth.get_token_cache_path().read_text())["test_counter"] == 20
+
+
+def test_user_config_is_loaded_from_arbitrary_cwd(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    (config_dir / ".env").write_text("AZURE_CLIENT_ID=config-client-id\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("AZURE_CLIENT_ID", None)
+    env["ONEDRIVE_MCP_CONFIG_DIR"] = str(config_dir)
+    env["PYTHONPATH"] = str(auth.PROJECT_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-c", "import auth; print(auth.get_client_id())"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert result.stdout.strip() == "config-client-id"
+    assert (config_dir / ".env").stat().st_mode & 0o777 == 0o600
 
 
 def test_auth_transport_errors_are_sanitized(monkeypatch):

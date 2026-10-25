@@ -27,7 +27,7 @@ OneDrive for Business and SharePoint are outside the project's default scope.
 
 ## Requirements
 
-- Linux and Python 3.10 or newer.
+- Linux and Python 3.11 or newer.
 - A personal Microsoft account.
 - A Microsoft Entra app registration configured for device-code authentication;
   see the [registration prerequisites](docs/setup.md#1-register-an-azure-application).
@@ -45,19 +45,24 @@ git clone https://github.com/joescars/onedrive-mcp.git
 cd onedrive-mcp
 python3 -m venv venv
 ./venv/bin/pip install --require-hashes -r requirements.lock
-cp .env.example .env
+export ONEDRIVE_MCP_CONFIG_DIR="${ONEDRIVE_MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/onedrive-mcp}"
+CONFIG_DIR="$ONEDRIVE_MCP_CONFIG_DIR"
+install -d -m 700 "$CONFIG_DIR"
+cp .env.example "$CONFIG_DIR/.env"
 ```
 
-Set `AZURE_CLIENT_ID` in `.env`, restrict the file, and sign in:
+Set `AZURE_CLIENT_ID` in `"$CONFIG_DIR/.env"`, restrict the file, and sign in:
 
 ```bash
-chmod 600 .env
+chmod 600 "$CONFIG_DIR/.env"
 ./venv/bin/python scripts/setup_auth.py
 ./venv/bin/python scripts/smoke_test.py
 ```
 
-The smoke test reads drive information and lists the root folder. It does not
-download or modify files.
+The token cache and downloads default to the stable per-user data directory
+(`$XDG_DATA_HOME/onedrive-mcp` or `~/.local/share/onedrive-mcp`), not the
+checkout or package install directory. The smoke test reads drive information
+and lists the root folder. It does not download or modify files.
 
 ## Connect a client
 

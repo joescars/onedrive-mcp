@@ -22,8 +22,9 @@
 #   sudo install -d -m 700 -o your-username -g your-username /var/lib/onedrive-mcp
 #   sudo install -d -m 700 -o your-username -g your-username /var/lib/onedrive-mcp/downloads
 # Set TOKEN_CACHE_PATH=/var/lib/onedrive-mcp/token_cache.bin and
-# DOWNLOAD_DIR=/var/lib/onedrive-mcp/downloads in the project's .env, and
-# run setup_auth.py as the service account before enabling this unit.
+# DOWNLOAD_DIR=/var/lib/onedrive-mcp/downloads in the service account's
+# ~/.config/onedrive-mcp/.env, and run setup_auth.py as that account before
+# enabling this unit.
 #   # optional overrides (defaults shown): MCPO_HOST=127.0.0.1  MCPO_PORT=8765
 
 [Unit]

@@ -23,7 +23,7 @@ The tests mock Graph and MSAL traffic and cover:
 POSIX permission checks run on Linux and are skipped on Windows. Passing
 Windows tests is not evidence that credentials have secure Windows ACLs.
 
-GitHub Actions tests Linux on Python 3.10, 3.12, and 3.14, plus Windows on
+GitHub Actions tests Linux on Python 3.11, 3.12, and 3.14, plus Windows on
 Python 3.12. It also runs an installed-dependency audit on pushes, pull
 requests, and a weekly schedule.
 
@@ -48,7 +48,7 @@ Install the maintenance tools and regenerate locks in dependency order:
 
 ```bash
 ./venv/bin/pip install --require-hashes -r requirements-dev.lock
-./venv/bin/python -m uv pip compile requirements.txt --universal --python-version 3.10 --generate-hashes --output-file requirements.lock
+./venv/bin/python -m uv pip compile requirements.txt --universal --python-version 3.11 --generate-hashes --output-file requirements.lock
 ./venv/bin/python -m uv pip compile requirements-bridge.txt --universal --python-version 3.11 --generate-hashes --constraint requirements.lock --output-file requirements-bridge.lock
 ./venv/bin/python -m uv pip compile requirements-dev.txt --universal --python-version 3.11 --generate-hashes --constraint requirements-bridge.lock --output-file requirements-dev.lock
 ./venv/bin/pip install --require-hashes -r requirements-dev.lock

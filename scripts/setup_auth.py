@@ -3,13 +3,11 @@ persists the MSAL token cache so the MCP server can run headlessly and
 silently refresh tokens afterwards.
 
 Usage:
-    cd onedrive-mcp
-    source venv/bin/activate
-    cp .env.example .env   # then edit .env with your AZURE_CLIENT_ID
-    python scripts/setup_auth.py
+    # Copy .env.example to ~/.config/onedrive-mcp/.env and set AZURE_CLIENT_ID
+    ./venv/bin/python scripts/setup_auth.py
 
-Requires AZURE_CLIENT_ID to be set in .env (see README.md for how to create
-an Azure App Registration for a personal Microsoft account).
+Requires AZURE_CLIENT_ID in the per-user config file or process environment
+(see docs/setup.md for the full setup instructions).
 """
 import sys
 from pathlib import Path
