@@ -1,170 +1,150 @@
 # OneDrive Read-Only MCP Server
 
 [![Tests and dependency audit](https://github.com/joescars/onedrive-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/joescars/onedrive-mcp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/joescars-onedrive-mcp)](https://pypi.org/project/joescars-onedrive-mcp/)
+[![npm](https://img.shields.io/npm/v/%40joescars%2Fonedrive-mcp)](https://www.npmjs.com/package/@joescars/onedrive-mcp)
 
-A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
-server that lets AI agents search, inspect, and download files from a personal
-Microsoft OneDrive account.
+A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server
+for searching, inspecting, and downloading files from a personal Microsoft
+OneDrive account. Install the published package with `npx`; no repository
+checkout or separate Python installation is needed. The launcher uses Astral
+`uv` to install and run the matching Python package in an isolated environment.
 
 > [!IMPORTANT]
-> This project is **read-only**. It exposes five read-style tools and only
-> performs HTTP GET requests against Microsoft Graph. It cannot upload, edit,
-> rename, move, or delete OneDrive content.
+> **This server is read-only.** It exposes five read-style tools and only
+> makes HTTP GET requests to Microsoft Graph. It can download files from
+> OneDrive to the local machine, but cannot upload, edit, rename, move, or
+> delete OneDrive content.
 
-## Features
+This project targets **personal Microsoft accounts and consumer OneDrive**.
+OneDrive for Business and SharePoint are outside its default scope. Linux is
+the supported production platform; Windows and other non-POSIX systems are for
+development only because POSIX file modes do not establish Windows ACLs.
 
-- Search OneDrive by file name or indexed content.
-- Browse folders with secure, bounded pagination.
-- Inspect file and folder metadata.
-- Download files to a controlled local directory without overwriting existing
-  files.
-- Refresh cached Microsoft credentials without interactive sign-in.
-- Connect directly to VS Code, Hermes, or pi over stdio, or to Open WebUI
-  through an authenticated `mcpo` bridge.
+## Install and connect
 
-This server targets **personal Microsoft accounts and consumer OneDrive**.
-OneDrive for Business and SharePoint are outside the project's default scope.
+### Requirements
 
-## Requirements
+- Node.js 18 or newer, which provides `npx`.
+- [Astral `uv`](https://docs.astral.sh/uv/getting-started/installation/),
+  which provides `uvx`. It creates an isolated Python environment and can
+  provision a compatible Python interpreter; you do not need to install the
+  server's Python dependencies yourself.
+- A personal Microsoft account and a Microsoft Entra app registration that
+  you own or are authorized to use.
 
-- Linux is the supported production platform. Windows is suitable for
-  development only because POSIX file modes do not establish Windows ACLs.
-- Source installs require Python 3.11 or newer. The optional npm launcher
-  requires Node.js 18+ and Astral `uv` (which can provision Python).
-- A personal Microsoft account and a Microsoft Entra app registration
-  configured for device-code authentication; see the
-  [registration prerequisites](docs/setup.md#1-register-an-azure-application).
+### 1. Register your Microsoft application
 
-## Quick start
+Follow [the app registration guide](docs/setup.md#1-register-an-azure-application).
+You will use its public **Application (client) ID** below. Each user supplies
+their own ID; this project does not ship a shared client ID or client secret.
 
-For complete Azure and authentication instructions, see
-[Setup](docs/setup.md).
+### 2. Save your client ID and sign in
+
+The following commands are for Linux/macOS shells. They create a private
+per-user configuration directory and `.env` file; replace the placeholder
+with your app registration's client ID:
 
 ```bash
-git clone https://github.com/joescars/onedrive-mcp.git
-cd onedrive-mcp
-python3 -m venv venv
-./venv/bin/pip install --require-hashes -r requirements.lock
-export ONEDRIVE_MCP_CONFIG_DIR="${ONEDRIVE_MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/onedrive-mcp}"
-CONFIG_DIR="$ONEDRIVE_MCP_CONFIG_DIR"
+CONFIG_DIR="${ONEDRIVE_MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/onedrive-mcp}"
 install -d -m 700 "$CONFIG_DIR"
-cp .env.example "$CONFIG_DIR/.env"
+if [ ! -e "$CONFIG_DIR/.env" ]; then
+  (umask 077; printf 'AZURE_CLIENT_ID=%s\nAZURE_TENANT_ID=consumers\n' 'YOUR-APPLICATION-CLIENT-ID' > "$CONFIG_DIR/.env")
+else
+  echo "Keep the existing $CONFIG_DIR/.env; verify AZURE_CLIENT_ID is set there."
+fi
+npx --yes --package @joescars/onedrive-mcp@0.1.1 onedrive-mcp-setup
 ```
 
-Set `AZURE_CLIENT_ID` in `"$CONFIG_DIR/.env"`, restrict the file, and sign in:
+These commands target `0.1.1`; wait until the matching npm and PyPI releases
+are published before installing that version.
 
-```bash
-chmod 600 "$CONFIG_DIR/.env"
-./venv/bin/python scripts/setup_auth.py
-./venv/bin/python scripts/smoke_test.py
-```
+The setup command displays Microsoft's device-code sign-in instructions and
+stores the token cache in the stable per-user data directory. You normally
+sign in once; repeat only if your credentials expire or are revoked. See
+[Setup](docs/setup.md) for app registration, path overrides, and migration
+from a source install.
 
-The token cache and downloads default to the stable per-user data directory
-(`$XDG_DATA_HOME/onedrive-mcp` or `~/.local/share/onedrive-mcp`), not the
-checkout or package install directory. The smoke test reads drive information
-and lists the root folder. It does not download or modify files.
+### 3. Add the server to your MCP client
 
-## Connect a client
-
-Complete the quick start before configuring a client. The MCP host starts this
-server when needed; do not leave a separate standalone process running.
-
-| Client                      | Transport               | Guide                                                        |
-| --------------------------- | ----------------------- | ------------------------------------------------------------ |
-| VS Code with GitHub Copilot | stdio                   | [VS Code setup](docs/clients.md#vs-code-with-github-copilot) |
-| Hermes                      | stdio                   | [Hermes setup](docs/clients.md#hermes)                       |
-| pi (pi.dev)                 | stdio                   | [pi setup](docs/clients.md#pi-pi-dev)                         |
-| npx launcher                | stdio                   | [npm installation](docs/npm.md)                               |
-| Open WebUI                  | OpenAPI/HTTP via `mcpo` | [Bridge deployment](docs/deployment.md)                      |
-
-Example VS Code workspace configuration:
+Use the following stdio configuration in clients that support an
+`mcpServers` object:
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "onedrive": {
-      "type": "stdio",
-      "command": "${workspaceFolder}/venv/bin/python",
-      "args": ["${workspaceFolder}/server.py"]
+      "command": "npx",
+      "args": ["--yes", "@joescars/onedrive-mcp@0.1.1"]
     }
   }
 }
 ```
 
-Use absolute paths for user-level or remote-user configuration. No tokens or
-`.env` values belong in client configuration.
+Pinning the package version makes upgrades intentional. The MCP client starts
+the server when needed; do not run a separate server process. If the client
+cannot find `npx` on its `PATH`, use the absolute path to `npx`. Keep client
+IDs, `.env` contents, and tokens out of client configuration. For client-
+specific examples, see [Client configuration](docs/clients.md); the npm
+launcher has its own [installation guide](docs/npm.md).
 
-## Tools
+## What it can do
 
-| Tool                                             | Description                                |
-| ------------------------------------------------ | ------------------------------------------ |
-| `search_onedrive(query, top=20, next_link=None)` | Search the drive one page at a time        |
-| `list_folder(path='/', top=50, next_link=None)`  | List a folder's children                   |
-| `get_item_metadata(path_or_id)`                  | Return metadata for one file or folder     |
-| `download_file(path_or_id, dest_filename=None)`  | Download a file into `DOWNLOAD_DIR`        |
-| `get_drive_info()`                               | Return drive, owner, and quota information |
+The server provides these five MCP tools:
 
-Paths such as `/Documents/report.pdf` and raw Graph item IDs are accepted where
-`path_or_id` is documented. Pagination continuations are opaque and must be
-passed back to the same tool with the original arguments.
+| Tool | Purpose |
+| --- | --- |
+| `search_onedrive(query, top=20, next_link=None)` | Search by file name or indexed content, one page at a time. |
+| `list_folder(path='/', top=50, next_link=None)` | List a folder's children with bounded pagination. |
+| `get_item_metadata(path_or_id)` | Inspect metadata for a file or folder. |
+| `download_file(path_or_id, dest_filename=None)` | Download a file into the local download directory without overwriting an existing file. |
+| `get_drive_info()` | Read drive, owner, and quota information. |
 
-See the [Tool reference](docs/tools.md) for complete inputs, outputs, and
-pagination behavior.
+Paths such as `/Documents/report.pdf` and Graph item IDs are accepted where
+documented. Pagination continuations are opaque; pass them back to the same
+tool with the original arguments. The server returns a local path and metadata
+for downloads, not the downloaded file's contents. See the [Tool reference](docs/tools.md)
+for exact arguments and results.
 
-Example prompts:
+## Storage and security
 
-- `Use OneDrive to list /Documents without downloading anything.`
-- `Search OneDrive for "invoice" and tell me if more pages are available.`
-- `Get metadata for /Documents/report.pdf without downloading it.`
-- `Download /Documents/report.pdf as report-copy.pdf.`
+- Microsoft Graph requests use read-only delegated scopes and a GET-only
+  network helper. This is not a guarantee against future code changes.
+- `.env` configuration, the token cache, and downloads live outside the npm
+  cache and source checkout in stable per-user directories.
+- The token cache contains sensitive credentials. On Linux, files are
+  restricted with owner-only POSIX permissions; the cache is not encrypted.
+- Signed download URLs are not returned in tool results or errors. Downloads
+  have configurable per-file and total-directory limits, and existing files
+  are never overwritten.
+- Search results, file names, paths, and metadata become available to the MCP
+  client and may enter the model's context. Only connect accounts and files
+  you intend to make available.
 
-Downloads remain on the machine running the server. The tool returns a local
-path and metadata, not the file's contents.
+Read the full [Security guide](docs/security.md), and never share
+`token_cache.bin` or the contents of your `.env` file.
 
-## Security and privacy
+## Other installation and deployment options
 
-- Microsoft Graph operations use the GET-only helper in `graph_client.py` and
-  read-only delegated scopes; this is not a guarantee against future code changes.
-- The token cache and downloads are stored with owner-only POSIX permissions.
-- Signed Graph download URLs are never returned in tool results or errors.
-- Downloads have configurable per-file and directory-wide limits.
-- Existing files are never overwritten.
-- The optional HTTP bridge requires an API key and defaults to loopback.
-
-Read-only access is still sensitive: names, paths, metadata, and quota details
-returned by tools enter the MCP client's context. Use only accounts and files
-you intend to make available, and never share `token_cache.bin`.
-
-See [Security](docs/security.md) for the trust model, safeguards, and
-operational limitations.
+- **Python/source installation:** follow [Setup](docs/setup.md). Useful for
+  development or when you prefer managing the checkout yourself.
+- **Open WebUI:** this server uses stdio; expose it through the authenticated
+  [`mcpo` bridge](docs/deployment.md) rather than pointing Open WebUI directly
+  at the stdio process.
 
 ## Documentation
 
-| Guide                                       | Covers                                                                     |
-| ------------------------------------------- | -------------------------------------------------------------------------- |
-| [Setup](docs/setup.md)                      | Azure registration, local installation, environment variables, and sign-in |
-| [Client configuration](docs/clients.md)     | VS Code, Hermes, pi, and stdio operation                                    |
-| [npm installation](docs/npm.md)              | Version-pinned npm launcher and separate device-code setup                  |
-| [Tool reference](docs/tools.md)             | Tool inputs, response shapes, pagination, and downloads                    |
-| [Open WebUI deployment](docs/deployment.md) | Authenticated `mcpo` bridge and systemd                                    |
-| [Security](docs/security.md)                | Read-only enforcement, local storage, pagination, and privacy              |
-| [Development](docs/development.md)          | Tests, dependency locks, smoke tests, and project structure                |
-| [Troubleshooting](docs/troubleshooting.md)  | Common authentication, Graph, client, and dependency errors                |
-
-## Development
-
-Run the credential-free test suite:
-
-```bash
-./venv/bin/python -m pytest -v
-```
-
-Tests mock Microsoft Graph and MSAL traffic; they do not access a real
-OneDrive account. See [Development](docs/development.md) for maintenance and
-contribution details.
+| Guide | What it covers |
+| --- | --- |
+| [Setup](docs/setup.md) | Microsoft app registration, source installation, configuration, and sign-in. |
+| [Client configuration](docs/clients.md) | VS Code, Hermes, pi, stdio, and Open WebUI setup. |
+| [npm installation](docs/npm.md) | Published launcher requirements, sign-in, and client configuration. |
+| [Tool reference](docs/tools.md) | Tool inputs, response shapes, pagination, and downloads. |
+| [Security](docs/security.md) | Read-only design, local storage, and privacy considerations. |
+| [Development](docs/development.md) | Tests, dependency maintenance, and publishing releases. |
+| [Troubleshooting](docs/troubleshooting.md) | Authentication, Graph, client, and dependency issues. |
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE). It is an
-independent community project and is not affiliated with or endorsed by
-Microsoft.
+MIT licensed; see [LICENSE](LICENSE). This is an independent community
+project and is not affiliated with or endorsed by Microsoft.
