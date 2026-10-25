@@ -1,0 +1,112 @@
+name: Publish packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Build and validate release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check build twine
+      - name: Check release tag matches both package versions
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tomllib
+          from pathlib import Path
+
+          python_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          npm_version = json.loads(Path("package.json").read_text())["version"]
+          tag = os.environ["RELEASE_TAG"]
+          if python_version != npm_version or tag != f"v{python_version}":
+              raise SystemExit(
+                  f"Release mismatch: tag={tag!r}, Python={python_version!r}, npm={npm_version!r}"
+              )
+          print(f"Validated release {tag}")
+          PY
+      - name: Build Python distributions
+        run: python -m build --outdir dist
+      - name: Validate Python distributions
+        run: python -m twine check dist/*
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test and inspect npm package
+        run: |
+          npm test
+          npm pack --dry-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish Python package to PyPI
+    if: github.event_name == 'release'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/joescars-onedrive-mcp
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish to PyPI using Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    name: Publish npm package
+    # npm requires the package to exist before its Trusted Publisher can be configured.
+    # Bootstrap 0.1.0 manually once; subsequent versions publish here through OIDC.
+    if: github.event_name == 'release' && github.event.release.tag_name != 'v0.1.0'
+    needs: [validate, publish-pypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@joescars/onedrive-mcp
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Ensure the matching Python release is available on PyPI
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "https://pypi.org/pypi/joescars-onedrive-mcp/${version}/json" >/dev/null; then
+              echo "Python release ${version} is available on PyPI."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Python release ${version} did not become available on PyPI." >&2
+          exit 1
+      - name: Use npm with OIDC Trusted Publishing support
+        run: npm install --global 'npm@^11.5.1'
+      - name: Publish to npm using Trusted Publishing
+        run: npm publish --access public

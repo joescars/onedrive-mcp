@@ -6,6 +6,10 @@ The npm package is a small launcher for the Python distribution. It keeps the
 existing Python implementation and read-only guarantees; it is not a separate
 TypeScript implementation.
 
+Package release instructions, including the initial npm publish required
+before npm Trusted Publishing can be configured, are in
+[Development: Distribution release](development.md#distribution-release).
+
 > [!NOTE]
 > The `npx` command becomes installable only after matching `0.1.0` releases
 > are published to both npm (`@joescars/onedrive-mcp`) and PyPI
