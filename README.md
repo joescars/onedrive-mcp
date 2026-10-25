@@ -53,11 +53,12 @@ if [ ! -e "$CONFIG_DIR/.env" ]; then
 else
   echo "Keep the existing $CONFIG_DIR/.env; verify AZURE_CLIENT_ID is set there."
 fi
-npx --yes --package @joescars/onedrive-mcp@0.1.1 onedrive-mcp-setup
+npx --yes --package @joescars/onedrive-mcp@latest onedrive-mcp-setup
 ```
 
-These commands target `0.1.1`; wait until the matching npm and PyPI releases
-are published before installing that version.
+The setup command follows npm's `latest` tag. The MCP client example below
+pins the running server to `0.1.1` so upgrades are intentional; use that pin
+after the matching npm and PyPI releases are available.
 
 The setup command displays Microsoft's device-code sign-in instructions and
 stores the token cache in the stable per-user data directory. You normally
