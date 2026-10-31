@@ -11,6 +11,7 @@ of a write call.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import email.utils
 import hashlib
@@ -39,6 +40,36 @@ MAX_RETRIES = 4
 MAX_RETRY_WAIT = 60.0
 MAX_PAGE_SIZE = 200
 _PAGE_KEY = secrets.token_bytes(32)
+
+
+def _validate_read_only_graph_contract() -> None:
+    """Fail fast if non-GET Graph calls are introduced.
+
+    This is a lightweight static guardrail: the source file itself must keep the
+    GET-only assertion and must not contain write-style HTTP verb calls.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise RuntimeError("graph_client source is not valid Python.") from exc
+
+    forbidden = {"post", "put", "patch", "delete", "request"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            func = node.func
+            if isinstance(func.value, ast.Name) and func.value.id == "requests" and func.attr in forbidden:
+                raise RuntimeError(
+                    "graph_client violates the read-only Graph contract: only GET requests are allowed."
+                )
+
+    if "assert http_verb is requests.get" not in source:
+        raise RuntimeError(
+            "graph_client violates the read-only Graph contract: only GET requests are allowed."
+        )
+
+
+_validate_read_only_graph_contract()
 
 
 class GraphError(RuntimeError):

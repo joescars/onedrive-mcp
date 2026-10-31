@@ -2,6 +2,7 @@
 
 No real network calls — Graph HTTP responses are mocked with `responses`.
 """
+import ast
 import os
 import sys
 from pathlib import Path
@@ -209,6 +210,19 @@ def test_get_item_metadata_never_exposes_download_url():
     assert "download_url" not in shaped
     assert "cdn.example" not in flat
     assert "secret-tokenized-url" not in flat
+
+
+def test_graph_client_read_only_contract_is_enforced():
+    source = Path(graph_client.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "requests"
+    }
+    assert "assert http_verb is requests.get" in source
+    assert calls == {"get"}
 
 
 @responses_lib.activate
