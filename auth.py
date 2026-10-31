@@ -107,6 +107,25 @@ class AuthConfigError(RuntimeError):
     """Raised when required auth configuration/tokens are missing or invalid."""
 
 
+def validate_runtime_config() -> None:
+    """Fail early for obviously unsafe or malformed config values.
+
+    This keeps the server from wandering into a broken runtime state when a user
+    sets placeholder values, path traversal, or malformed tenant/client strings.
+    """
+    client_id = get_client_id()
+    tenant = get_tenant_id()
+    if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
+        raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
+    if not tenant or any(ch in tenant for ch in ("/", "\\", "?", "#", "\0")):
+        raise AuthConfigError("AZURE_TENANT_ID is invalid.")
+
+    token_cache = get_token_cache_path()
+    download_dir = get_download_dir()
+    if token_cache == download_dir:
+        raise AuthConfigError("TOKEN_CACHE_PATH and DOWNLOAD_DIR must not resolve to the same location.")
+
+
 def get_client_id() -> str:
     client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
     if not client_id or client_id.startswith("00000000"):
@@ -116,11 +135,16 @@ def get_client_id() -> str:
             "and set AZURE_CLIENT_ID to your Azure App Registration's "
             "Application (client) ID."
         )
+    if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
+        raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
     return client_id
 
 
 def get_tenant_id() -> str:
-    return os.environ.get("AZURE_TENANT_ID", "consumers").strip() or "consumers"
+    tenant = os.environ.get("AZURE_TENANT_ID", "consumers").strip() or "consumers"
+    if any(ch in tenant for ch in ("/", "\\", "?", "#", "\0")):
+        raise AuthConfigError("AZURE_TENANT_ID contains invalid characters.")
+    return tenant
 
 
 def get_authority() -> str:
