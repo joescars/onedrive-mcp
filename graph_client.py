@@ -11,6 +11,7 @@ of a write call.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import email.utils
 import hashlib
@@ -39,6 +40,36 @@ MAX_RETRIES = 4
 MAX_RETRY_WAIT = 60.0
 MAX_PAGE_SIZE = 200
 _PAGE_KEY = secrets.token_bytes(32)
+
+
+def _validate_read_only_graph_contract() -> None:
+    """Fail fast if non-GET Graph calls are introduced.
+
+    This is a lightweight static guardrail: the source file itself must keep the
+    GET-only assertion and must not contain write-style HTTP verb calls.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise RuntimeError("graph_client source is not valid Python.") from exc
+
+    forbidden = {"post", "put", "patch", "delete", "request"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            func = node.func
+            if isinstance(func.value, ast.Name) and func.value.id == "requests" and func.attr in forbidden:
+                raise RuntimeError(
+                    "graph_client violates the read-only Graph contract: only GET requests are allowed."
+                )
+
+    if "assert http_verb is requests.get" not in source:
+        raise RuntimeError(
+            "graph_client violates the read-only Graph contract: only GET requests are allowed."
+        )
+
+
+_validate_read_only_graph_contract()
 
 
 class GraphError(RuntimeError):
@@ -402,7 +433,53 @@ def _positive_limit(variable: str, default: int) -> int:
     raise GraphError(f"{variable} must be a positive integer number of bytes.")
 
 
+def _directory_usage_cache_path(directory: Path) -> Path:
+    return directory / ".onedrive-dir-size"
+
+
+def _write_directory_usage(directory: Path, used: int) -> None:
+    cache_path = _directory_usage_cache_path(directory)
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=directory,
+            prefix=".onedrive-dir-size-",
+            delete=False,
+        )
+        with tmp:
+            tmp.write(str(max(0, used)))
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp.name, cache_path)
+        os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def _directory_size(directory: Path) -> int:
+    """Return the current directory size.
+
+    We keep a tiny metadata cache to avoid repeated full scans for stable
+    download directories, but the cache is not trusted if it can be stale. When a
+    scan is required, we walk the tree and propagate any permission error so the
+    quota check still fails closed instead of bypassing the limit.
+    """
+    if not directory.exists():
+        return 0
+
+    cache_path = _directory_usage_cache_path(directory)
+    if cache_path.exists():
+        try:
+            cache_time = cache_path.stat().st_mtime_ns
+            dir_time = directory.stat().st_mtime_ns
+            if cache_time >= dir_time:
+                cached = int(cache_path.read_text(encoding="utf-8").strip())
+                if cached >= 0:
+                    return cached
+        except (OSError, ValueError):
+            cache_path.unlink(missing_ok=True)
+
     def fail_scan(error: OSError) -> None:
         raise error
 
@@ -410,8 +487,10 @@ def _directory_size(directory: Path) -> int:
     for root, _, filenames in os.walk(directory, onerror=fail_scan, followlinks=False):
         for filename in filenames:
             path = Path(root) / filename
-            if not path.is_symlink():
-                total += path.stat().st_size
+            if path.name == cache_path.name or path.is_symlink():
+                continue
+            total += path.stat().st_size
+    _write_directory_usage(directory, total)
     return total
 
 

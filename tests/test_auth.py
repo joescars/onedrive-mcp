@@ -35,6 +35,28 @@ def test_get_client_id_returns_real_value(monkeypatch):
     assert auth.get_client_id() == "real-client-id-1234"
 
 
+def test_validate_runtime_config_rejects_invalid_client_id(monkeypatch):
+    monkeypatch.setenv("AZURE_CLIENT_ID", "bad/id")
+    with pytest.raises(auth.AuthConfigError, match="invalid characters"):
+        auth.validate_runtime_config()
+
+
+def test_validate_runtime_config_rejects_invalid_tenant(monkeypatch):
+    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-1111-1111-1111-111111111111")
+    monkeypatch.setenv("AZURE_TENANT_ID", "bad?tenant")
+    with pytest.raises(auth.AuthConfigError, match="invalid characters"):
+        auth.validate_runtime_config()
+
+
+def test_validate_runtime_config_rejects_same_cache_and_download_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-1111-1111-1111-111111111111")
+    target = tmp_path / "same" 
+    monkeypatch.setenv("TOKEN_CACHE_PATH", str(target))
+    monkeypatch.setenv("DOWNLOAD_DIR", str(target))
+    with pytest.raises(auth.AuthConfigError, match="must not resolve to the same location"):
+        auth.validate_runtime_config()
+
+
 def test_get_tenant_id_defaults_to_consumers(monkeypatch):
     monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
     assert auth.get_tenant_id() == "consumers"
