@@ -14,4 +14,5 @@ __pycache__/
 downloads/
 .pytest_cache/
 *.egg-info/
+.pi/
 SECURITY_REVIEW.md
