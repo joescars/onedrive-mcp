@@ -433,64 +433,22 @@ def _positive_limit(variable: str, default: int) -> int:
     raise GraphError(f"{variable} must be a positive integer number of bytes.")
 
 
-def _directory_usage_cache_path(directory: Path) -> Path:
-    return directory / ".onedrive-dir-size"
-
-
-def _write_directory_usage(directory: Path, used: int) -> None:
-    cache_path = _directory_usage_cache_path(directory)
-    try:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=directory,
-            prefix=".onedrive-dir-size-",
-            delete=False,
-        )
-        with tmp:
-            tmp.write(str(max(0, used)))
-            tmp.flush()
-            os.fsync(tmp.fileno())
-        os.replace(tmp.name, cache_path)
-        os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-
-
 def _directory_size(directory: Path) -> int:
-    """Return the current directory size.
+    """Measure the tree without modifying files or trusting cached totals.
 
-    We keep a tiny metadata cache to avoid repeated full scans for stable
-    download directories, but the cache is not trusted if it can be stale. When a
-    scan is required, we walk the tree and propagate any permission error so the
-    quota check still fails closed instead of bypassing the limit.
+    Existing files (including legacy usage metadata and abandoned temporaries)
+    count toward quota. Root mtimes cannot detect file growth or nested changes.
+    Do not follow symlinks; propagate scan/stat errors so quota fails closed.
     """
-    if not directory.exists():
-        return 0
-
-    cache_path = _directory_usage_cache_path(directory)
-    if cache_path.exists():
-        try:
-            cache_time = cache_path.stat().st_mtime_ns
-            dir_time = directory.stat().st_mtime_ns
-            if cache_time >= dir_time:
-                cached = int(cache_path.read_text(encoding="utf-8").strip())
-                if cached >= 0:
-                    return cached
-        except (OSError, ValueError):
-            cache_path.unlink(missing_ok=True)
-
     def fail_scan(error: OSError) -> None:
         raise error
 
     total = 0
     for root, _, filenames in os.walk(directory, onerror=fail_scan, followlinks=False):
         for filename in filenames:
-            path = Path(root) / filename
-            if path.name == cache_path.name or path.is_symlink():
-                continue
-            total += path.stat().st_size
-    _write_directory_usage(directory, total)
+            metadata = (Path(root) / filename).lstat()
+            if not stat.S_ISLNK(metadata.st_mode):
+                total += metadata.st_size
     return total
 
 

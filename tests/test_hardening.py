@@ -273,6 +273,52 @@ def test_directory_budget_accounts_for_existing_files(tmp_path, monkeypatch, dow
     graph.requests.get.assert_not_called()
 
 
+def test_directory_cache_is_not_used_as_trusted_state_after_growth(tmp_path):
+    (tmp_path / "nested").mkdir()
+    payload = tmp_path / "nested" / "a.bin"
+    payload.write_bytes(b"123")
+    assert graph._directory_size(tmp_path) == 3
+    payload.write_bytes(b"1234567")
+    assert graph._directory_size(tmp_path) == 7
+
+    (tmp_path / "nested" / "b.bin").write_bytes(b"xx")
+    assert graph._directory_size(tmp_path) == 9
+    (tmp_path / "nested" / "b.bin").unlink()
+    assert graph._directory_size(tmp_path) == 7
+
+
+def test_directory_cache_ignores_corrupt_and_symlink_metadata(tmp_path):
+    cache = tmp_path / ".onedrive-dir-size"
+    cache.write_text("not-a-number", encoding="utf-8")
+    (tmp_path / "prod.bin").write_bytes(b"hello")
+    assert graph._directory_size(tmp_path) == 5 + len("not-a-number")
+    assert cache.read_text() == "not-a-number"
+
+    cache.write_text("still-bad", encoding="utf-8")
+    cache.unlink()
+    outside = tmp_path.parent / "outside-dir-size-target"
+    outside.write_text("not-used", encoding="utf-8")
+    cache.symlink_to(outside)
+    assert graph._directory_size(tmp_path) == 5
+    assert cache.is_symlink()
+    assert outside.read_text() == "not-used"
+
+
+@pytest.mark.parametrize("relative", [".onedrive-dir-size", "nested/.onedrive-dir-size"])
+def test_quota_counts_and_preserves_metadata_named_payloads(tmp_path, relative):
+    payload = tmp_path / relative
+    payload.parent.mkdir(parents=True, exist_ok=True)
+    payload.write_bytes(b"x" * 100)
+    assert graph._directory_size(tmp_path) == 100
+    assert payload.read_bytes() == b"x" * 100
+    assert not list(tmp_path.glob(".onedrive-dir-size-*"))
+
+
+def test_quota_scan_does_not_create_metadata(tmp_path):
+    assert graph._directory_size(tmp_path) == 0
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_directory_scan_failure_does_not_bypass_quota(tmp_path, monkeypatch, download_response):
     def denied(directory, *, onerror, followlinks):
         onerror(PermissionError("unreadable subdirectory"))
