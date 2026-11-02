@@ -291,7 +291,8 @@ def test_directory_cache_ignores_corrupt_and_symlink_metadata(tmp_path):
     cache = tmp_path / ".onedrive-dir-size"
     cache.write_text("not-a-number", encoding="utf-8")
     (tmp_path / "prod.bin").write_bytes(b"hello")
-    assert graph._directory_size(tmp_path) == 5
+    assert graph._directory_size(tmp_path) == 5 + len("not-a-number")
+    assert cache.read_text() == "not-a-number"
 
     cache.write_text("still-bad", encoding="utf-8")
     cache.unlink()
@@ -299,7 +300,23 @@ def test_directory_cache_ignores_corrupt_and_symlink_metadata(tmp_path):
     outside.write_text("not-used", encoding="utf-8")
     cache.symlink_to(outside)
     assert graph._directory_size(tmp_path) == 5
-    assert not cache.exists() or cache.is_symlink() is False
+    assert cache.is_symlink()
+    assert outside.read_text() == "not-used"
+
+
+@pytest.mark.parametrize("relative", [".onedrive-dir-size", "nested/.onedrive-dir-size"])
+def test_quota_counts_and_preserves_metadata_named_payloads(tmp_path, relative):
+    payload = tmp_path / relative
+    payload.parent.mkdir(parents=True, exist_ok=True)
+    payload.write_bytes(b"x" * 100)
+    assert graph._directory_size(tmp_path) == 100
+    assert payload.read_bytes() == b"x" * 100
+    assert not list(tmp_path.glob(".onedrive-dir-size-*"))
+
+
+def test_quota_scan_does_not_create_metadata(tmp_path):
+    assert graph._directory_size(tmp_path) == 0
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_directory_scan_failure_does_not_bypass_quota(tmp_path, monkeypatch, download_response):
