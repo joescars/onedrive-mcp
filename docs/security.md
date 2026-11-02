@@ -75,7 +75,9 @@ Limits are enforced using Graph metadata and while streaming, including when
 metadata is missing or incorrect. Transfers sharing a directory are serialized
 to enforce the directory budget. Files written there by unrelated processes
 remain outside this locking mechanism but still count toward the measured
-usage.
+usage. Usage is measured from the directory tree before each transfer, not
+from cached totals. Legacy `.onedrive-dir-size` files count toward quota and
+are never overwritten or deleted by accounting.
 
 Completed files are published only after transfer and size validation.
 Publication never overwrites an existing path, including during filename
