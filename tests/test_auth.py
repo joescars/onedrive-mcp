@@ -31,8 +31,34 @@ def test_get_client_id_raises_when_empty(monkeypatch):
 
 
 def test_get_client_id_returns_real_value(monkeypatch):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "real-client-id-1234")
-    assert auth.get_client_id() == "real-client-id-1234"
+    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-1111-1111-1111-111111111111")
+    assert auth.get_client_id() == "11111111-1111-1111-1111-111111111111"
+
+
+def test_server_main_validates_runtime_config_before_start(monkeypatch):
+    import server
+
+    validator = Mock()
+    monkeypatch.setattr(server, "validate_runtime_config", validator)
+    run = Mock()
+    monkeypatch.setattr(server.mcp, "run", run)
+
+    server.main()
+    validator.assert_called_once_with()
+    run.assert_called_once_with(transport="stdio")
+
+
+def test_setup_main_validates_runtime_config_before_start(monkeypatch):
+    import onedrive_mcp_setup
+
+    validator = Mock()
+    monkeypatch.setattr(onedrive_mcp_setup, "validate_runtime_config", validator)
+    run = Mock(return_value={"scope": "Files.Read"})
+    monkeypatch.setattr(onedrive_mcp_setup, "run_device_code_flow", run)
+
+    assert onedrive_mcp_setup.main() == 0
+    validator.assert_called_once_with()
+    run.assert_called_once_with()
 
 
 def test_validate_runtime_config_rejects_invalid_client_id(monkeypatch):
@@ -246,7 +272,7 @@ for _ in range(10):
 def test_user_config_is_loaded_from_arbitrary_cwd(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir(mode=0o700)
-    (config_dir / ".env").write_text("AZURE_CLIENT_ID=config-client-id\n", encoding="utf-8")
+    (config_dir / ".env").write_text("AZURE_CLIENT_ID=11111111-1111-1111-1111-111111111111\n", encoding="utf-8")
     env = os.environ.copy()
     env.pop("AZURE_CLIENT_ID", None)
     env["ONEDRIVE_MCP_CONFIG_DIR"] = str(config_dir)
@@ -260,7 +286,7 @@ def test_user_config_is_loaded_from_arbitrary_cwd(tmp_path):
         check=True,
         timeout=10,
     )
-    assert result.stdout.strip() == "config-client-id"
+    assert result.stdout.strip() == "11111111-1111-1111-1111-111111111111"
     if os.name == "posix":
         assert (config_dir / ".env").stat().st_mode & 0o777 == 0o600
 

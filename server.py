@@ -12,13 +12,14 @@ HTTP GET against Microsoft Graph (enforced in graph_client.py).
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated, Optional
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 import graph_client
-from auth import get_download_dir
+from auth import AuthConfigError, get_download_dir, validate_runtime_config
 from graph_client import GraphError, GraphNotFoundError
 
 mcp = FastMCP("onedrive-readonly")
@@ -133,7 +134,17 @@ def get_drive_info() -> dict:
 
 
 def main() -> None:
-    """Run the MCP server over stdio (also used by the installed console script)."""
+    """Run the MCP server over stdio (also used by the installed console script).
+
+    The server may start without credentials to allow tool discovery in MCP
+    clients, but it validates the runtime config before any network access or
+    persistent write occurs.
+    """
+    try:
+        validate_runtime_config()
+    except AuthConfigError as exc:
+        print(f"OneDrive MCP configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
     mcp.run(transport="stdio")
 
 

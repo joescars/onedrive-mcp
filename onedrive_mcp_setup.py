@@ -1,13 +1,14 @@
 """Installed command-line entry point for the interactive device-code login."""
 import sys
 
-from auth import AuthConfigError, get_token_cache_path, run_device_code_flow
+from auth import AuthConfigError, get_token_cache_path, run_device_code_flow, validate_runtime_config
 
 
 def main() -> int:
     print("OneDrive MCP server — one-time device code sign-in")
     print("-" * 60)
     try:
+        validate_runtime_config()
         result = run_device_code_flow()
     except AuthConfigError as exc:
         print(f"\nSetup failed: {exc}", file=sys.stderr)

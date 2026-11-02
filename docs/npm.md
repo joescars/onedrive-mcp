@@ -65,7 +65,7 @@ intentional. Example:
   "mcpServers": {
     "onedrive": {
       "command": "npx",
-      "args": ["--yes", "@joescars/onedrive-mcp@0.1.1"]
+      "args": ["--yes", "@joescars/onedrive-mcp@0.1.2"]
     }
   }
 }
@@ -76,6 +76,15 @@ version. MCP stdin/stdout are passed through unchanged; startup guidance and
 errors go to stderr. The launcher itself does not read or store tokens. The
 Python server stores config, cache, and downloads in the same stable per-user
 locations used by a source install, never in npm's ephemeral package cache.
+
+## Preflight and troubleshooting
+
+The runtime checks local settings before Graph calls and token-cache writes. A
+missing or blank `AZURE_CLIENT_ID` is still allowed for tool-discovery startup,
+but malformed IDs, unsupported tenant values, conflicting storage paths,
+relative path overrides, and non-positive limits fail fast with a clear
+message. Keep errors on stderr and never expose config or token values in the
+MCP stream.
 
 If your MCP host does not inherit your shell's `PATH`, provide the absolute
 path to `npx` in its `command` field. If you customized the config or data

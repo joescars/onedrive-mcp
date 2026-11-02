@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import stat
 import sys
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -96,6 +98,7 @@ if _ENV_PATH.is_file():
         logging.getLogger(__name__).warning("Could not restrict the OneDrive MCP .env file; check its permissions.")
 
 AUTHORITY_BASE = "https://login.microsoftonline.com"
+_TENANT_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 # Delegated scopes needed for read-only OneDrive access. Files.Read.All
 # broadens read access to items shared with the user / across the drive,
@@ -107,23 +110,84 @@ class AuthConfigError(RuntimeError):
     """Raised when required auth configuration/tokens are missing or invalid."""
 
 
+def _validate_path_setting(variable: str, *, is_directory: bool) -> None:
+    raw = os.environ.get(variable, "").strip()
+    if not raw:
+        return
+
+    if variable in {"ONEDRIVE_MCP_CONFIG_DIR", "ONEDRIVE_MCP_DATA_DIR"}:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            raise AuthConfigError(f"{variable} must be an absolute path, not a relative path.")
+        resolved = path.resolve()
+    else:
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            resolved = path
+        elif variable in {"TOKEN_CACHE_PATH", "DOWNLOAD_DIR"} and _LEGACY_ENV_IN_USE:
+            resolved = (PROJECT_ROOT / path).resolve()
+        else:
+            resolved = _resolve_user_data_path(variable, "") if variable in {"TOKEN_CACHE_PATH", "DOWNLOAD_DIR"} else (get_user_data_dir() / path).resolve()
+
+    if resolved.exists() and is_directory and not resolved.is_dir():
+        raise AuthConfigError(f"{variable} points to a file, not a directory: {resolved}")
+    if resolved.exists() and not is_directory and resolved.is_dir():
+        raise AuthConfigError(f"{variable} points to a directory, not a file: {resolved}")
+
+
 def validate_runtime_config() -> None:
     """Fail early for obviously unsafe or malformed config values.
 
     This keeps the server from wandering into a broken runtime state when a user
     sets placeholder values, path traversal, or malformed tenant/client strings.
+    Missing credentials are still permitted at startup so clients can discover the
+    server's tools before the user completes a one-time sign-in.
     """
-    client_id = get_client_id()
+    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    if client_id:
+        if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
+            raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
+        try:
+            uuid.UUID(client_id)
+        except ValueError as exc:
+            raise AuthConfigError(
+                "AZURE_CLIENT_ID must be a valid Azure application (client) ID in GUID format."
+            ) from exc
+        if client_id.startswith("00000000"):
+            raise AuthConfigError(
+                "AZURE_CLIENT_ID still uses the placeholder value. Replace it with your app registration's real Application (client) ID."
+            )
+
     tenant = get_tenant_id()
-    if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
-        raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
     if not tenant or any(ch in tenant for ch in ("/", "\\", "?", "#", "\0")):
         raise AuthConfigError("AZURE_TENANT_ID is invalid.")
+    if tenant not in {"consumers", "common", "organizations"} and not _TENANT_RE.fullmatch(tenant):
+        raise AuthConfigError(
+            "AZURE_TENANT_ID must be 'consumers', 'common', 'organizations', a tenant GUID, or a tenant domain name."
+        )
+
+    _validate_path_setting("ONEDRIVE_MCP_CONFIG_DIR", is_directory=True)
+    _validate_path_setting("ONEDRIVE_MCP_DATA_DIR", is_directory=True)
+    _validate_path_setting("TOKEN_CACHE_PATH", is_directory=False)
+    _validate_path_setting("DOWNLOAD_DIR", is_directory=True)
 
     token_cache = get_token_cache_path()
     download_dir = get_download_dir()
     if token_cache == download_dir:
         raise AuthConfigError("TOKEN_CACHE_PATH and DOWNLOAD_DIR must not resolve to the same location.")
+
+    for variable, raw in (
+        ("MAX_DOWNLOAD_BYTES", os.environ.get("MAX_DOWNLOAD_BYTES", "")),
+        ("MAX_DOWNLOAD_DIR_BYTES", os.environ.get("MAX_DOWNLOAD_DIR_BYTES", "")),
+    ):
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise AuthConfigError(f"{variable} must be a positive integer number of bytes.") from exc
+        if value <= 0:
+            raise AuthConfigError(f"{variable} must be a positive integer number of bytes.")
 
 
 def get_client_id() -> str:
@@ -137,6 +201,12 @@ def get_client_id() -> str:
         )
     if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
         raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
+    try:
+        uuid.UUID(client_id)
+    except ValueError as exc:
+        raise AuthConfigError(
+            "AZURE_CLIENT_ID must be a valid Azure application (client) ID in GUID format."
+        ) from exc
     return client_id
 
 
@@ -144,6 +214,12 @@ def get_tenant_id() -> str:
     tenant = os.environ.get("AZURE_TENANT_ID", "consumers").strip() or "consumers"
     if any(ch in tenant for ch in ("/", "\\", "?", "#", "\0")):
         raise AuthConfigError("AZURE_TENANT_ID contains invalid characters.")
+    if tenant in {"consumers", "common", "organizations"}:
+        return tenant
+    if not _TENANT_RE.fullmatch(tenant):
+        raise AuthConfigError(
+            "AZURE_TENANT_ID must be 'consumers', 'common', 'organizations', a tenant GUID, or a tenant domain name."
+        )
     return tenant
 
 
@@ -236,6 +312,7 @@ def build_app(cache: Optional[msal.SerializableTokenCache] = None) -> msal.Publi
 
 def run_device_code_flow() -> dict:
     """Run the human-driven sign-in while holding the shared cache lock."""
+    validate_runtime_config()
     with _cache_transaction():
         return _run_device_code_flow()
 
@@ -289,6 +366,7 @@ def get_access_token(*, force_refresh: bool = False) -> str:
     usable cached account / refresh token, instructing the caller to run the
     one-time setup command again.
     """
+    validate_runtime_config()
     with _cache_transaction():
         return _get_access_token(force_refresh=force_refresh)
 
