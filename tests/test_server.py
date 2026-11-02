@@ -15,10 +15,23 @@ import server
 
 
 def test_stdio_handshake_and_schema_from_arbitrary_cwd(tmp_path):
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / ".env").write_text("")
     async def check():
         parameters = StdioServerParameters(
             command=sys.executable, args=[str(Path(server.__file__).resolve())],
             cwd=str(tmp_path),
+            env={
+                "ONEDRIVE_MCP_CONFIG_DIR": str(config),
+                "ONEDRIVE_MCP_DATA_DIR": str(tmp_path / "data"),
+                "TOKEN_CACHE_PATH": str(tmp_path / "data" / "cache.bin"),
+                "DOWNLOAD_DIR": str(tmp_path / "data" / "downloads"),
+                "AZURE_CLIENT_ID": "",
+                "AZURE_TENANT_ID": "consumers",
+                "MAX_DOWNLOAD_BYTES": "100",
+                "MAX_DOWNLOAD_DIR_BYTES": "1000",
+            },
         )
         with anyio.fail_after(30):
             async with stdio_client(parameters) as (reader, writer):
@@ -37,6 +50,7 @@ def test_stdio_handshake_and_schema_from_arbitrary_cwd(tmp_path):
                     invalid = await session.call_tool("list_folder", {"top": 201})
                     assert invalid.isError
     asyncio.run(check())
+    assert not (tmp_path / "data").exists()
 
 
 @pytest.mark.parametrize("fallback,stream_failure", [(False, False), (True, False), (False, True), (True, True)])

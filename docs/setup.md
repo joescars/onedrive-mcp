@@ -100,7 +100,8 @@ The default config directory honors `$XDG_CONFIG_HOME`; the data directory
 honors `$XDG_DATA_HOME`. Windows development uses `%APPDATA%` for config and
 `%LOCALAPPDATA%` for data; macOS uses `~/Library/Application Support`. Set
 `ONEDRIVE_MCP_DATA_DIR` in the process environment or `.env` to override the
-data directory. `ONEDRIVE_MCP_CONFIG_DIR` must be set in the process
+data directory. Both config/data directory overrides must be absolute paths.
+`ONEDRIVE_MCP_CONFIG_DIR` must be set in the process
 environment before launch because it determines where `.env` is loaded from.
 Relative `TOKEN_CACHE_PATH` and `DOWNLOAD_DIR` overrides resolve under the
 stable data directory, never under the process working directory or installed

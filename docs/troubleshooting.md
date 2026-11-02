@@ -2,6 +2,33 @@
 
 [Back to README](../README.md)
 
+## Preflight failures
+
+### Configuration check failed before startup
+
+The server validates Azure IDs, tenant names, path overrides, and download
+limits before it attempts a Graph request or writes the token cache. This
+preflight catches bad placeholders or conflicting storage settings early.
+
+Common fixes:
+
+- Set `AZURE_CLIENT_ID` to the Application (client) ID from the Azure app
+  registration.
+- Use `AZURE_TENANT_ID=consumers` for personal OneDrive accounts unless you
+  intentionally target `common`, `organizations`, or a tenant GUID/domain.
+- Use absolute paths for `ONEDRIVE_MCP_CONFIG_DIR` and
+  `ONEDRIVE_MCP_DATA_DIR` overrides. `TOKEN_CACHE_PATH` and `DOWNLOAD_DIR`
+  may be absolute or relative to the stable per-user data directory; legacy
+  checkout-local `.env` configurations retain checkout-relative behavior.
+  Ensure the cache is a file path and downloads a directory, not the same path.
+- Check filesystem permissions and remove symlink loops from configured paths.
+  Path inspection failures identify the setting without exposing its value.
+- Use `MAX_DOWNLOAD_BYTES` and `MAX_DOWNLOAD_DIR_BYTES` as positive integers.
+
+If the config is incomplete but valid enough for discovery, the server may still
+start and expose its tools; it refuses to continue with a broken configuration
+before network access or persistent writes.
+
 ## Installation
 
 ### No matching distribution for a locked version

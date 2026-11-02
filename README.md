@@ -57,8 +57,7 @@ npx --yes --package @joescars/onedrive-mcp@latest onedrive-mcp-setup
 ```
 
 The setup command follows npm's `latest` tag. The MCP client example below
-pins the running server to `0.1.1` so upgrades are intentional; use that pin
-after the matching npm and PyPI releases are available.
+pins the running server to `0.1.2` so upgrades are intentional.
 
 The setup command displays Microsoft's device-code sign-in instructions and
 stores the token cache in the stable per-user data directory. You normally
@@ -76,7 +75,7 @@ Use the following stdio configuration in clients that support an
   "mcpServers": {
     "onedrive": {
       "command": "npx",
-      "args": ["--yes", "@joescars/onedrive-mcp@0.1.1"]
+      "args": ["--yes", "@joescars/onedrive-mcp@0.1.2"]
     }
   }
 }
@@ -124,6 +123,21 @@ for exact arguments and results.
 
 Read the full [Security guide](docs/security.md), and never share
 `token_cache.bin` or the contents of your `.env` file.
+
+## Configuration preflight and troubleshooting
+
+Before starting the MCP transport, the Python server validates local settings
+for malformed Azure IDs, unsupported tenant names, path conflicts, filesystem
+inspection failures, and non-positive byte limits. Config/data directory
+overrides must be absolute; relative cache/download paths remain supported as
+described in [Setup](docs/setup.md). The server
+still permits a credential-free startup so MCP clients can discover its tools,
+but it refuses to proceed with a broken runtime configuration before any Graph
+request or token-cache write occurs.
+
+If startup fails, the error is sent to stderr and the process exits without
+leaking config values or tokens to MCP stdout. For more detail, see
+[Setup](docs/setup.md) and [Troubleshooting](docs/troubleshooting.md).
 
 ## Other installation and deployment options
 
