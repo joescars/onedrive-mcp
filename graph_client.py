@@ -458,33 +458,36 @@ def _write_directory_usage(directory: Path, used: int) -> None:
 
 
 def _directory_size(directory: Path) -> int:
-    """Return the current directory size.
+    """Return the authoritative size of the directory tree.
 
-    We keep a tiny metadata cache to avoid repeated full scans for stable
-    download directories, but the cache is not trusted if it can be stale. When a
-    scan is required, we walk the tree and propagate any permission error so the
-    quota check still fails closed instead of bypassing the limit.
+    The cache file is preserved for observability and low-frequency reuse, but it
+    is never treated as trusted state for quota enforcement. Root directory
+    mtimes are not a safe invalidation signal because files can grow or nested
+    directories can change without updating the parent directory time, and caches
+    can go stale when unrelated processes mutate the tree. We therefore walk the
+    tree itself and fail closed on any permission or metadata error instead of
+    bypassing the limit.
     """
     if not directory.exists():
         return 0
 
     cache_path = _directory_usage_cache_path(directory)
-    if cache_path.exists():
-        try:
-            cache_time = cache_path.stat().st_mtime_ns
-            dir_time = directory.stat().st_mtime_ns
-            if cache_time >= dir_time:
-                cached = int(cache_path.read_text(encoding="utf-8").strip())
-                if cached >= 0:
-                    return cached
-        except (OSError, ValueError):
-            cache_path.unlink(missing_ok=True)
+    try:
+        if cache_path.is_symlink():
+            cache_path.unlink()
+    except OSError:
+        pass
 
     def fail_scan(error: OSError) -> None:
         raise error
 
     total = 0
-    for root, _, filenames in os.walk(directory, onerror=fail_scan, followlinks=False):
+    for root, dirnames, filenames in os.walk(directory, onerror=fail_scan, followlinks=False):
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if not (Path(root) / dirname).is_symlink()
+        ]
         for filename in filenames:
             path = Path(root) / filename
             if path.name == cache_path.name or path.is_symlink():
