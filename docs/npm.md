@@ -82,9 +82,12 @@ locations used by a source install, never in npm's ephemeral package cache.
 The runtime checks local settings before Graph calls and token-cache writes. A
 missing or blank `AZURE_CLIENT_ID` is still allowed for tool-discovery startup,
 but malformed IDs, unsupported tenant values, conflicting storage paths,
-relative path overrides, and non-positive limits fail fast with a clear
-message. Keep errors on stderr and never expose config or token values in the
-MCP stream.
+and non-positive limits fail fast with a clear message on stderr.
+Config/data directory overrides must be absolute. Relative `TOKEN_CACHE_PATH`
+and `DOWNLOAD_DIR` values remain supported: they resolve under the stable
+data directory, or under the checkout for a legacy checkout-local `.env`.
+Path inspection errors (including symlink loops) identify the setting without
+printing its value or a traceback to the MCP stream.
 
 If your MCP host does not inherit your shell's `PATH`, provide the absolute
 path to `npx` in its `command` field. If you customized the config or data

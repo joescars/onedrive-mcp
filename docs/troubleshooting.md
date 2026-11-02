@@ -16,8 +16,13 @@ Common fixes:
   registration.
 - Use `AZURE_TENANT_ID=consumers` for personal OneDrive accounts unless you
   intentionally target `common`, `organizations`, or a tenant GUID/domain.
-- Keep `TOKEN_CACHE_PATH` and `DOWNLOAD_DIR` as absolute paths, not relative
-  paths, and ensure they do not resolve to the same directory.
+- Use absolute paths for `ONEDRIVE_MCP_CONFIG_DIR` and
+  `ONEDRIVE_MCP_DATA_DIR` overrides. `TOKEN_CACHE_PATH` and `DOWNLOAD_DIR`
+  may be absolute or relative to the stable per-user data directory; legacy
+  checkout-local `.env` configurations retain checkout-relative behavior.
+  Ensure the cache is a file path and downloads a directory, not the same path.
+- Check filesystem permissions and remove symlink loops from configured paths.
+  Path inspection failures identify the setting without exposing its value.
 - Use `MAX_DOWNLOAD_BYTES` and `MAX_DOWNLOAD_DIR_BYTES` as positive integers.
 
 If the config is incomplete but valid enough for discovery, the server may still

@@ -34,30 +34,60 @@ from filelock import FileLock, Timeout
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-def _expand_user_path(raw: str) -> Path:
-    path = Path(raw).expanduser()
-    # Never let a relative override depend on the MCP host's arbitrary cwd.
-    return (path if path.is_absolute() else Path.home() / path).resolve()
+class AuthConfigError(RuntimeError):
+    """Raised when required auth configuration/tokens are missing or invalid."""
+
+
+@contextmanager
+def _path_errors(variable: str) -> Iterator[None]:
+    """Normalize filesystem failures without exposing configured path values."""
+    try:
+        yield
+    except AuthConfigError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        # Symlink loops raise RuntimeError on older Python and OSError on newer
+        # versions. Never let the underlying path-bearing exception escape.
+        raise AuthConfigError(
+            f"{variable} could not be resolved or inspected. Check path types, "
+            "permissions, and symlink loops."
+        ) from None
+
+
+def _path_stat(path: Path):
+    try:
+        return path.stat()
+    except FileNotFoundError:
+        return None
+
+
+def _expand_user_path(raw: str, variable: str) -> Path:
+    with _path_errors(variable):
+        path = Path(raw).expanduser()
+        # Never let a relative override depend on the MCP host's arbitrary cwd.
+        path = path if path.is_absolute() else Path.home() / path
+        _path_stat(path)  # Detect loops even when resolve(strict=False) tolerates them.
+        return path.resolve()
 
 
 def _user_config_dir() -> Path:
     override = os.environ.get("ONEDRIVE_MCP_CONFIG_DIR")
     if override:
-        return _expand_user_path(override)
+        return _expand_user_path(override, "ONEDRIVE_MCP_CONFIG_DIR")
     if os.name == "nt":
         base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return _expand_user_path(str(base / "onedrive-mcp"))
+    return _expand_user_path(str(base / "onedrive-mcp"), "ONEDRIVE_MCP_CONFIG_DIR")
 
 
 def get_user_data_dir() -> Path:
     """Return the stable per-user data directory, independent of install/cwd."""
     override = os.environ.get("ONEDRIVE_MCP_DATA_DIR")
     if override:
-        return _expand_user_path(override)
+        return _expand_user_path(override, "ONEDRIVE_MCP_DATA_DIR")
     if os.name == "nt":
         base = Path(
             os.environ.get("LOCALAPPDATA")
@@ -68,34 +98,46 @@ def get_user_data_dir() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return _expand_user_path(str(base / "onedrive-mcp"))
+    return _expand_user_path(str(base / "onedrive-mcp"), "ONEDRIVE_MCP_DATA_DIR")
 
 
-CONFIG_DIR = _user_config_dir()
-_CONFIG_ENV_PATH = CONFIG_DIR / ".env"
+# Defer early configuration filesystem errors until an entry point can report
+# them cleanly on stderr. Never fall back to a different config after a failure.
+_CONFIG_LOAD_ERROR = None
+CONFIG_DIR = None
+_CONFIG_ENV_PATH = None
+_ENV_PATH = None
 _LEGACY_ENV_PATH = PROJECT_ROOT / ".env"
-_LEGACY_ENV_IN_USE = not _CONFIG_ENV_PATH.is_file() and _LEGACY_ENV_PATH.is_file()
-_ENV_PATH = _CONFIG_ENV_PATH if _CONFIG_ENV_PATH.is_file() else _LEGACY_ENV_PATH
+_LEGACY_ENV_IN_USE = False
+try:
+    with _path_errors("ONEDRIVE_MCP_CONFIG_DIR / .env"):
+        CONFIG_DIR = _user_config_dir()
+        _CONFIG_ENV_PATH = CONFIG_DIR / ".env"
+        metadata = _path_stat(_CONFIG_ENV_PATH)
+        if metadata is not None and not stat.S_ISREG(metadata.st_mode):
+            raise AuthConfigError("The OneDrive MCP .env must be a regular file.")
+        _ENV_PATH = _CONFIG_ENV_PATH if metadata is not None else _LEGACY_ENV_PATH
+        metadata = _path_stat(_ENV_PATH)
+        _LEGACY_ENV_IN_USE = _ENV_PATH == _LEGACY_ENV_PATH and metadata is not None
+        if metadata is not None:
+            if not stat.S_ISREG(metadata.st_mode):
+                raise AuthConfigError("The OneDrive MCP .env must be a regular file.")
+            load_dotenv(_ENV_PATH)
+            try:
+                if stat.S_IMODE(metadata.st_mode) != 0o600:
+                    os.chmod(_ENV_PATH, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                logging.getLogger(__name__).warning(
+                    "Could not restrict the OneDrive MCP .env file; check its permissions."
+                )
+except AuthConfigError as exc:
+    _CONFIG_LOAD_ERROR = str(exc)
 
 if os.name != "posix":
     logging.getLogger(__name__).warning(
         "Windows/non-POSIX hosts are supported for development only. "
         "Owner-only token/download permissions require a Linux deployment."
     )
-
-# Prefer the stable per-user config file. Keep loading a checkout-local .env
-# only as a migration path for existing source installs; new installs should
-# create ~/.config/onedrive-mcp/.env (or the platform equivalent).
-load_dotenv(_ENV_PATH)
-
-# Restrict the selected config file to its owner, best-effort. The file usually
-# contains only a client ID and paths, but may gain sensitive values over time.
-if _ENV_PATH.is_file():
-    try:
-        if stat.S_IMODE(_ENV_PATH.stat().st_mode) != 0o600:
-            os.chmod(_ENV_PATH, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        logging.getLogger(__name__).warning("Could not restrict the OneDrive MCP .env file; check its permissions.")
 
 AUTHORITY_BASE = "https://login.microsoftonline.com"
 _TENANT_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -106,33 +148,22 @@ _TENANT_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 SCOPES = ["Files.Read", "Files.Read.All"]
 
 
-class AuthConfigError(RuntimeError):
-    """Raised when required auth configuration/tokens are missing or invalid."""
-
-
-def _validate_path_setting(variable: str, *, is_directory: bool) -> None:
-    raw = os.environ.get(variable, "").strip()
-    if not raw:
-        return
-
-    if variable in {"ONEDRIVE_MCP_CONFIG_DIR", "ONEDRIVE_MCP_DATA_DIR"}:
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            raise AuthConfigError(f"{variable} must be an absolute path, not a relative path.")
-        resolved = path.resolve()
-    else:
-        path = Path(raw).expanduser()
-        if path.is_absolute():
-            resolved = path
-        elif variable in {"TOKEN_CACHE_PATH", "DOWNLOAD_DIR"} and _LEGACY_ENV_IN_USE:
-            resolved = (PROJECT_ROOT / path).resolve()
+def _validate_path_setting(variable: str, *, is_directory: bool) -> Path:
+    with _path_errors(variable):
+        if variable in {"ONEDRIVE_MCP_CONFIG_DIR", "ONEDRIVE_MCP_DATA_DIR"}:
+            raw = os.environ.get(variable, "").strip()
+            if raw and not Path(raw).expanduser().is_absolute():
+                raise AuthConfigError(f"{variable} must be an absolute path, not a relative path.")
+            resolved = _user_config_dir() if variable == "ONEDRIVE_MCP_CONFIG_DIR" else get_user_data_dir()
         else:
-            resolved = _resolve_user_data_path(variable, "") if variable in {"TOKEN_CACHE_PATH", "DOWNLOAD_DIR"} else (get_user_data_dir() / path).resolve()
-
-    if resolved.exists() and is_directory and not resolved.is_dir():
-        raise AuthConfigError(f"{variable} points to a file, not a directory: {resolved}")
-    if resolved.exists() and not is_directory and resolved.is_dir():
-        raise AuthConfigError(f"{variable} points to a directory, not a file: {resolved}")
+            resolved = get_token_cache_path() if variable == "TOKEN_CACHE_PATH" else get_download_dir()
+        metadata = _path_stat(resolved)
+        if metadata is not None:
+            expected = stat.S_ISDIR if is_directory else stat.S_ISREG
+            if not expected(metadata.st_mode):
+                kind = "directory" if is_directory else "regular file"
+                raise AuthConfigError(f"{variable} must point to a {kind}.")
+        return resolved
 
 
 def validate_runtime_config() -> None:
@@ -143,6 +174,8 @@ def validate_runtime_config() -> None:
     Missing credentials are still permitted at startup so clients can discover the
     server's tools before the user completes a one-time sign-in.
     """
+    if _CONFIG_LOAD_ERROR is not None:
+        raise AuthConfigError(_CONFIG_LOAD_ERROR)
     client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
     if client_id:
         if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
@@ -168,11 +201,8 @@ def validate_runtime_config() -> None:
 
     _validate_path_setting("ONEDRIVE_MCP_CONFIG_DIR", is_directory=True)
     _validate_path_setting("ONEDRIVE_MCP_DATA_DIR", is_directory=True)
-    _validate_path_setting("TOKEN_CACHE_PATH", is_directory=False)
-    _validate_path_setting("DOWNLOAD_DIR", is_directory=True)
-
-    token_cache = get_token_cache_path()
-    download_dir = get_download_dir()
+    token_cache = _validate_path_setting("TOKEN_CACHE_PATH", is_directory=False)
+    download_dir = _validate_path_setting("DOWNLOAD_DIR", is_directory=True)
     if token_cache == download_dir:
         raise AuthConfigError("TOKEN_CACHE_PATH and DOWNLOAD_DIR must not resolve to the same location.")
 
@@ -228,17 +258,19 @@ def get_authority() -> str:
 
 
 def _resolve_user_data_path(variable: str, default_name: str) -> Path:
-    raw = os.environ.get(variable, "").strip()
-    if not raw:
-        return (get_user_data_dir() / default_name).resolve()
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        # Preserve checkout-local relative paths for legacy project .env files.
-        # All new configuration resolves relative overrides from the stable
-        # per-user data directory, never from the package or process cwd.
-        base = PROJECT_ROOT if _LEGACY_ENV_IN_USE else get_user_data_dir()
-        path = base / path
-    return path.resolve()
+    with _path_errors(variable):
+        raw = os.environ.get(variable, "").strip()
+        if not raw:
+            path = get_user_data_dir() / default_name
+        else:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                # Preserve legacy checkout-relative overrides; new installs use
+                # stable user data storage, never the process working directory.
+                base = PROJECT_ROOT if _LEGACY_ENV_IN_USE else get_user_data_dir()
+                path = base / path
+        _path_stat(path)
+        return path.resolve()
 
 
 def get_token_cache_path() -> Path:

@@ -126,9 +126,11 @@ Read the full [Security guide](docs/security.md), and never share
 
 ## Configuration preflight and troubleshooting
 
-Before starting the MCP server, the launcher validates local config values for
-common mistakes such as malformed Azure IDs, unsupported tenant names, path
-conflicts, bad relative overrides, and non-positive byte limits. The server
+Before starting the MCP transport, the Python server validates local settings
+for malformed Azure IDs, unsupported tenant names, path conflicts, filesystem
+inspection failures, and non-positive byte limits. Config/data directory
+overrides must be absolute; relative cache/download paths remain supported as
+described in [Setup](docs/setup.md). The server
 still permits a credential-free startup so MCP clients can discover its tools,
 but it refuses to proceed with a broken runtime configuration before any Graph
 request or token-cache write occurs.
