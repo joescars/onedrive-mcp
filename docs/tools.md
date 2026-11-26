@@ -8,7 +8,7 @@ The server exposes exactly five read-only MCP tools. Errors return a clean
 ## `search_onedrive`
 
 ```text
-search_onedrive(query, top=20, next_link=None)
+search_onedrive(query, top=20, continuation=None)
 ```
 
 Searches file and folder names and indexed content across the drive.
@@ -17,12 +17,12 @@ Searches file and folder names and indexed content across the drive.
 |---|---|
 | `query` | Search text |
 | `top` | Page size from 1 to 200 |
-| `next_link` | Opaque continuation from the preceding response |
+| `continuation` | Opaque continuation from the preceding response |
 
 Returns:
 
 ```text
-{query, count, items, next_link, has_more}
+{query, count, items, continuation, has_more}
 ```
 
 `count` is the number of items in the current page, not a drive-wide total.
@@ -30,7 +30,7 @@ Returns:
 ## `list_folder`
 
 ```text
-list_folder(path="/", top=50, next_link=None)
+list_folder(path="/", top=50, continuation=None)
 ```
 
 Lists the immediate children of a folder.
@@ -39,12 +39,12 @@ Lists the immediate children of a folder.
 |---|---|
 | `path` | Human path, `root`, `/`, or a Graph item ID |
 | `top` | Page size from 1 to 200 |
-| `next_link` | Opaque continuation from the preceding response |
+| `continuation` | Opaque continuation from the preceding response |
 
 Returns:
 
 ```text
-{items, next_link, has_more}
+{items, continuation, has_more}
 ```
 
 ## `get_item_metadata`
@@ -122,7 +122,7 @@ This is a useful lightweight authentication check.
 
 ## Pagination
 
-When `has_more` is true, call the same tool with its returned `next_link` and
+When `has_more` is true, call the same tool with its returned `continuation` and
 the same query or path and `top` value. Do not fetch or modify the continuation
 directly.
 

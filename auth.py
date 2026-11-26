@@ -1,428 +1,193 @@
 """MSAL device-code authentication for a personal Microsoft account.
 
 Handles:
-  - Interactive device-code login (run once via scripts/setup_auth.py)
+  - Interactive device-code login (run once via onedrive-mcp-setup)
   - Loading/saving a plaintext token cache protected by filesystem permissions
   - Silent token acquisition (with refresh) for the running MCP server
 
-No Graph HTTP calls live here — this module is purely about acquiring an
-access token. graph_client.py is the only place that talks to Graph, and it
-only ever issues GET requests (see the read-only guard there).
+All configuration comes from an already-validated ``Settings``; this module
+never reads the environment. No Graph HTTP calls live here — graph_client.py
+is the only place that talks to Graph, and it only ever issues GET requests.
 """
 from __future__ import annotations
 
-import logging
 import os
-import re
 import stat
 import sys
 import tempfile
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import msal
 import requests
-from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
-# Code location is used only to support legacy checkout-local .env files.
-# Persistent configuration and user data must not live beside installed code:
-# MCP clients can install the package into an ephemeral cache (for example,
-# npx's package cache) or make its source tree read-only.
-PROJECT_ROOT = Path(__file__).resolve().parent
+from settings import AuthConfigError, ConfigError, Settings
 
-
-class AuthConfigError(RuntimeError):
-    """Raised when required auth configuration/tokens are missing or invalid."""
-
-
-@contextmanager
-def _path_errors(variable: str) -> Iterator[None]:
-    """Normalize filesystem failures without exposing configured path values."""
-    try:
-        yield
-    except AuthConfigError:
-        raise
-    except (OSError, RuntimeError, ValueError):
-        # Symlink loops raise RuntimeError on older Python and OSError on newer
-        # versions. Never let the underlying path-bearing exception escape.
-        raise AuthConfigError(
-            f"{variable} could not be resolved or inspected. Check path types, "
-            "permissions, and symlink loops."
-        ) from None
-
-
-def _path_stat(path: Path):
-    try:
-        return path.stat()
-    except FileNotFoundError:
-        return None
-
-
-def _expand_user_path(raw: str, variable: str) -> Path:
-    with _path_errors(variable):
-        path = Path(raw).expanduser()
-        # Never let a relative override depend on the MCP host's arbitrary cwd.
-        path = path if path.is_absolute() else Path.home() / path
-        _path_stat(path)  # Detect loops even when resolve(strict=False) tolerates them.
-        return path.resolve()
-
-
-def _user_config_dir() -> Path:
-    override = os.environ.get("ONEDRIVE_MCP_CONFIG_DIR")
-    if override:
-        return _expand_user_path(override, "ONEDRIVE_MCP_CONFIG_DIR")
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return _expand_user_path(str(base / "onedrive-mcp"), "ONEDRIVE_MCP_CONFIG_DIR")
-
-
-def get_user_data_dir() -> Path:
-    """Return the stable per-user data directory, independent of install/cwd."""
-    override = os.environ.get("ONEDRIVE_MCP_DATA_DIR")
-    if override:
-        return _expand_user_path(override, "ONEDRIVE_MCP_DATA_DIR")
-    if os.name == "nt":
-        base = Path(
-            os.environ.get("LOCALAPPDATA")
-            or os.environ.get("APPDATA")
-            or Path.home() / "AppData" / "Local"
-        )
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return _expand_user_path(str(base / "onedrive-mcp"), "ONEDRIVE_MCP_DATA_DIR")
-
-
-# Defer early configuration filesystem errors until an entry point can report
-# them cleanly on stderr. Never fall back to a different config after a failure.
-_CONFIG_LOAD_ERROR = None
-CONFIG_DIR = None
-_CONFIG_ENV_PATH = None
-_ENV_PATH = None
-_LEGACY_ENV_PATH = PROJECT_ROOT / ".env"
-_LEGACY_ENV_IN_USE = False
-try:
-    with _path_errors("ONEDRIVE_MCP_CONFIG_DIR / .env"):
-        CONFIG_DIR = _user_config_dir()
-        _CONFIG_ENV_PATH = CONFIG_DIR / ".env"
-        metadata = _path_stat(_CONFIG_ENV_PATH)
-        if metadata is not None and not stat.S_ISREG(metadata.st_mode):
-            raise AuthConfigError("The OneDrive MCP .env must be a regular file.")
-        _ENV_PATH = _CONFIG_ENV_PATH if metadata is not None else _LEGACY_ENV_PATH
-        metadata = _path_stat(_ENV_PATH)
-        _LEGACY_ENV_IN_USE = _ENV_PATH == _LEGACY_ENV_PATH and metadata is not None
-        if metadata is not None:
-            if not stat.S_ISREG(metadata.st_mode):
-                raise AuthConfigError("The OneDrive MCP .env must be a regular file.")
-            load_dotenv(_ENV_PATH)
-            try:
-                if stat.S_IMODE(metadata.st_mode) != 0o600:
-                    os.chmod(_ENV_PATH, stat.S_IRUSR | stat.S_IWUSR)
-            except OSError:
-                logging.getLogger(__name__).warning(
-                    "Could not restrict the OneDrive MCP .env file; check its permissions."
-                )
-except AuthConfigError as exc:
-    _CONFIG_LOAD_ERROR = str(exc)
-
-if os.name != "posix":
-    logging.getLogger(__name__).warning(
-        "Windows/non-POSIX hosts are supported for development only. "
-        "Owner-only token/download permissions require a Linux deployment."
-    )
-
-AUTHORITY_BASE = "https://login.microsoftonline.com"
-_TENANT_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+__all__ = ["AuthConfigError", "ConfigError", "SCOPES", "TokenSource"]
 
 # Delegated scopes needed for read-only OneDrive access. Files.Read.All
 # broadens read access to items shared with the user / across the drive,
 # but never grants write.
 SCOPES = ["Files.Read", "Files.Read.All"]
 
-
-def _validate_path_setting(variable: str, *, is_directory: bool) -> Path:
-    with _path_errors(variable):
-        if variable in {"ONEDRIVE_MCP_CONFIG_DIR", "ONEDRIVE_MCP_DATA_DIR"}:
-            raw = os.environ.get(variable, "").strip()
-            if raw and not Path(raw).expanduser().is_absolute():
-                raise AuthConfigError(f"{variable} must be an absolute path, not a relative path.")
-            resolved = _user_config_dir() if variable == "ONEDRIVE_MCP_CONFIG_DIR" else get_user_data_dir()
-        else:
-            resolved = get_token_cache_path() if variable == "TOKEN_CACHE_PATH" else get_download_dir()
-        metadata = _path_stat(resolved)
-        if metadata is not None:
-            expected = stat.S_ISDIR if is_directory else stat.S_ISREG
-            if not expected(metadata.st_mode):
-                kind = "directory" if is_directory else "regular file"
-                raise AuthConfigError(f"{variable} must point to a {kind}.")
-        return resolved
+_NOT_CONFIGURED = (
+    "AZURE_CLIENT_ID is not set (or is still the placeholder value). "
+    "Copy .env.example to the OneDrive MCP config directory as .env "
+    "and set AZURE_CLIENT_ID to your Azure App Registration's "
+    "Application (client) ID."
+)
 
 
-def validate_runtime_config() -> None:
-    """Fail early for obviously unsafe or malformed config values.
+class TokenSource:
+    """Supplies access tokens for the signed-in account."""
 
-    This keeps the server from wandering into a broken runtime state when a user
-    sets placeholder values, path traversal, or malformed tenant/client strings.
-    Missing credentials are still permitted at startup so clients can discover the
-    server's tools before the user completes a one-time sign-in.
-    """
-    if _CONFIG_LOAD_ERROR is not None:
-        raise AuthConfigError(_CONFIG_LOAD_ERROR)
-    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
-    if client_id:
-        if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
-            raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        lock_timeout: float = 10,
+        app_factory: Optional[Callable[[msal.SerializableTokenCache], "msal.PublicClientApplication"]] = None,
+    ) -> None:
+        self._settings = settings
+        self._lock_timeout = lock_timeout
+        self._app_factory = app_factory or self._build_msal_app
+
+    # -- public API ---------------------------------------------------------
+
+    def access_token(self, *, force_refresh: bool = False) -> str:
+        """Silently acquire (and transparently refresh) an access token.
+
+        Raises ConfigError with a human-readable message if unconfigured or
+        if there is no usable cached account / refresh token.
+        """
+        self._require_client_id()
+        with self._cache_transaction():
+            return self._access_token(force_refresh=force_refresh)
+
+    def sign_in_device_code(self) -> dict:
+        """Run the human-driven sign-in while holding the shared cache lock."""
+        self._require_client_id()
+        with self._cache_transaction():
+            return self._sign_in_device_code()
+
+    # -- internals ----------------------------------------------------------
+
+    def _require_client_id(self) -> None:
+        if self._settings.client_id is None:
+            raise ConfigError(_NOT_CONFIGURED)
+
+    def _build_msal_app(self, cache: msal.SerializableTokenCache) -> msal.PublicClientApplication:
+        return msal.PublicClientApplication(
+            client_id=self._settings.client_id,
+            authority=self._settings.authority,
+            token_cache=cache,
+        )
+
+    def _load_cache(self) -> msal.SerializableTokenCache:
+        cache = msal.SerializableTokenCache()
+        cache_path = self._settings.token_cache_path
+        if cache_path.exists():
+            os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
+            cache.deserialize(cache_path.read_text(encoding="utf-8"))
+        return cache
+
+    def _save_cache(self, cache: msal.SerializableTokenCache) -> None:
+        if not cache.has_state_changed:
+            return
+        cache_path = self._settings.token_cache_path
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = cache.serialize()
+        fd, temporary = tempfile.mkstemp(prefix=".token-cache-", dir=cache_path.parent)
         try:
-            uuid.UUID(client_id)
-        except ValueError as exc:
-            raise AuthConfigError(
-                "AZURE_CLIENT_ID must be a valid Azure application (client) ID in GUID format."
-            ) from exc
-        if client_id.startswith("00000000"):
-            raise AuthConfigError(
-                "AZURE_CLIENT_ID still uses the placeholder value. Replace it with your app registration's real Application (client) ID."
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(serialized)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, cache_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    @contextmanager
+    def _cache_transaction(self) -> Iterator[None]:
+        """Serialize the entire read/refresh/write cycle, including across hosts' processes."""
+        path = self._settings.token_cache_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name == "posix" and path.parent == self._settings.data_dir:
+                os.chmod(path.parent, stat.S_IRWXU)
+            with FileLock(str(path) + ".lock", timeout=self._lock_timeout, mode=0o600):
+                yield
+        except Timeout:
+            raise ConfigError(
+                "Token cache is busy. Wait for the other sign-in or request to finish and retry."
+            ) from None
+        except (requests.exceptions.RequestException, msal.exceptions.MsalServiceError):
+            raise ConfigError("Microsoft sign-in connection failed. Please try again later.") from None
+        except (OSError, ValueError):
+            raise ConfigError(
+                "Could not read or persist the token cache. Check its permissions and "
+                "available disk space; if the cache is corrupt, run `onedrive-mcp-setup` "
+                "(or scripts/setup_auth.py from a source checkout) with a new "
+                "TOKEN_CACHE_PATH."
+            ) from None
+
+    def _sign_in_device_code(self) -> dict:
+        """Interactive, one-time login. Prints instructions to stdout."""
+        cache = self._load_cache()
+        app = self._app_factory(cache)
+
+        flow = app.initiate_device_flow(scopes=SCOPES)
+        if "user_code" not in flow:
+            raise ConfigError(
+                f"Failed to start device code flow: {flow.get('error_description', flow)}"
             )
 
-    tenant = get_tenant_id()
-    if not tenant or any(ch in tenant for ch in ("/", "\\", "?", "#", "\0")):
-        raise AuthConfigError("AZURE_TENANT_ID is invalid.")
-    if tenant not in {"consumers", "common", "organizations"} and not _TENANT_RE.fullmatch(tenant):
-        raise AuthConfigError(
-            "AZURE_TENANT_ID must be 'consumers', 'common', 'organizations', a tenant GUID, or a tenant domain name."
+        print("\n" + "=" * 70)
+        print("MICROSOFT ACCOUNT SIGN-IN REQUIRED")
+        print("=" * 70)
+        print(flow["message"])
+        print("=" * 70)
+        print(
+            "Open the URL above on ANY device with a browser (phone, laptop, "
+            "etc.), enter the code, and sign in with your PERSONAL Microsoft "
+            "account. This terminal will wait and continue automatically."
         )
+        print("=" * 70 + "\n")
+        sys.stdout.flush()
 
-    _validate_path_setting("ONEDRIVE_MCP_CONFIG_DIR", is_directory=True)
-    _validate_path_setting("ONEDRIVE_MCP_DATA_DIR", is_directory=True)
-    token_cache = _validate_path_setting("TOKEN_CACHE_PATH", is_directory=False)
-    download_dir = _validate_path_setting("DOWNLOAD_DIR", is_directory=True)
-    if token_cache == download_dir:
-        raise AuthConfigError("TOKEN_CACHE_PATH and DOWNLOAD_DIR must not resolve to the same location.")
+        result = app.acquire_token_by_device_flow(flow)  # blocks until login or timeout
 
-    for variable, raw in (
-        ("MAX_DOWNLOAD_BYTES", os.environ.get("MAX_DOWNLOAD_BYTES", "")),
-        ("MAX_DOWNLOAD_DIR_BYTES", os.environ.get("MAX_DOWNLOAD_DIR_BYTES", "")),
-    ):
-        if not raw:
-            continue
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise AuthConfigError(f"{variable} must be a positive integer number of bytes.") from exc
-        if value <= 0:
-            raise AuthConfigError(f"{variable} must be a positive integer number of bytes.")
+        if "access_token" not in result:
+            raise ConfigError(
+                "Device code login failed: "
+                f"{result.get('error')}: {result.get('error_description')}"
+            )
 
+        self._save_cache(cache)
+        return result
 
-def get_client_id() -> str:
-    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
-    if not client_id or client_id.startswith("00000000"):
-        raise AuthConfigError(
-            "AZURE_CLIENT_ID is not set (or is still the placeholder value). "
-            "Copy .env.example to the OneDrive MCP config directory as .env "
-            "and set AZURE_CLIENT_ID to your Azure App Registration's "
-            "Application (client) ID."
-        )
-    if any(ch in client_id for ch in ("/", "\\", "?", "#", "\0")):
-        raise AuthConfigError("AZURE_CLIENT_ID contains invalid characters.")
-    try:
-        uuid.UUID(client_id)
-    except ValueError as exc:
-        raise AuthConfigError(
-            "AZURE_CLIENT_ID must be a valid Azure application (client) ID in GUID format."
-        ) from exc
-    return client_id
+    def _access_token(self, *, force_refresh: bool) -> str:
+        cache = self._load_cache()
+        app = self._app_factory(cache)
+        accounts = app.get_accounts()
+        if not accounts:
+            raise ConfigError(
+                "No signed-in account found in the token cache. Run `onedrive-mcp-setup` "
+                "(or `python scripts/setup_auth.py` from a source checkout) once "
+                "to sign in via device code."
+            )
 
+        result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=force_refresh)
+        self._save_cache(cache)
 
-def get_tenant_id() -> str:
-    tenant = os.environ.get("AZURE_TENANT_ID", "consumers").strip() or "consumers"
-    if any(ch in tenant for ch in ("/", "\\", "?", "#", "\0")):
-        raise AuthConfigError("AZURE_TENANT_ID contains invalid characters.")
-    if tenant in {"consumers", "common", "organizations"}:
-        return tenant
-    if not _TENANT_RE.fullmatch(tenant):
-        raise AuthConfigError(
-            "AZURE_TENANT_ID must be 'consumers', 'common', 'organizations', a tenant GUID, or a tenant domain name."
-        )
-    return tenant
+        if not result or "access_token" not in result:
+            raise ConfigError(
+                "Could not silently refresh the Microsoft Graph access token "
+                "(it may have been revoked or expired beyond refresh). Re-run "
+                "`onedrive-mcp-setup` (or `python scripts/setup_auth.py` from a "
+                "source checkout) to sign in again."
+            )
 
-
-def get_authority() -> str:
-    return f"{AUTHORITY_BASE}/{get_tenant_id()}"
-
-
-def _resolve_user_data_path(variable: str, default_name: str) -> Path:
-    with _path_errors(variable):
-        raw = os.environ.get(variable, "").strip()
-        if not raw:
-            path = get_user_data_dir() / default_name
-        else:
-            path = Path(raw).expanduser()
-            if not path.is_absolute():
-                # Preserve legacy checkout-relative overrides; new installs use
-                # stable user data storage, never the process working directory.
-                base = PROJECT_ROOT if _LEGACY_ENV_IN_USE else get_user_data_dir()
-                path = base / path
-        _path_stat(path)
-        return path.resolve()
-
-
-def get_token_cache_path() -> Path:
-    return _resolve_user_data_path("TOKEN_CACHE_PATH", "token_cache.bin")
-
-
-def get_download_dir() -> Path:
-    return _resolve_user_data_path("DOWNLOAD_DIR", "downloads")
-
-
-def _load_cache() -> msal.SerializableTokenCache:
-    cache = msal.SerializableTokenCache()
-    cache_path = get_token_cache_path()
-    if cache_path.exists():
-        os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
-        cache.deserialize(cache_path.read_text(encoding="utf-8"))
-    return cache
-
-
-def _save_cache(cache: msal.SerializableTokenCache) -> None:
-    if not cache.has_state_changed:
-        return
-    cache_path = get_token_cache_path()
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = cache.serialize()
-    fd, temporary = tempfile.mkstemp(prefix=".token-cache-", dir=cache_path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(serialized)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary, cache_path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
-@contextmanager
-def _cache_transaction() -> Iterator[None]:
-    """Serialize the entire read/refresh/write cycle, including across hosts' processes."""
-    path = get_token_cache_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if os.name == "posix" and path.parent == get_user_data_dir():
-            os.chmod(path.parent, stat.S_IRWXU)
-        with FileLock(str(path) + ".lock", timeout=10, mode=0o600):
-            yield
-    except Timeout:
-        raise AuthConfigError(
-            "Token cache is busy. Wait for the other sign-in or request to finish and retry."
-        ) from None
-    except (requests.exceptions.RequestException, msal.exceptions.MsalServiceError):
-        raise AuthConfigError("Microsoft sign-in connection failed. Please try again later.") from None
-    except (OSError, ValueError):
-        raise AuthConfigError(
-            "Could not read or persist the token cache. Check its permissions and "
-            "available disk space; if the cache is corrupt, run `onedrive-mcp-setup` "
-            "(or scripts/setup_auth.py from a source checkout) with a new "
-            "TOKEN_CACHE_PATH."
-        ) from None
-
-
-def build_app(cache: Optional[msal.SerializableTokenCache] = None) -> msal.PublicClientApplication:
-    if cache is None:
-        cache = _load_cache()
-    return msal.PublicClientApplication(
-        client_id=get_client_id(),
-        authority=get_authority(),
-        token_cache=cache,
-    )
-
-
-def run_device_code_flow() -> dict:
-    """Run the human-driven sign-in while holding the shared cache lock."""
-    validate_runtime_config()
-    with _cache_transaction():
-        return _run_device_code_flow()
-
-
-def _run_device_code_flow() -> dict:
-    """Interactive, one-time login. Prints instructions to stdout.
-
-    Returns the MSAL token result dict on success. Raises AuthConfigError on
-    failure. This function is intended to be called from the one-time setup
-    command, not from the MCP server itself.
-    """
-    cache = _load_cache()
-    app = build_app(cache)
-
-    flow = app.initiate_device_flow(scopes=SCOPES)
-    if "user_code" not in flow:
-        raise AuthConfigError(
-            f"Failed to start device code flow: {flow.get('error_description', flow)}"
-        )
-
-    print("\n" + "=" * 70)
-    print("MICROSOFT ACCOUNT SIGN-IN REQUIRED")
-    print("=" * 70)
-    print(flow["message"])
-    print("=" * 70)
-    print(
-        "Open the URL above on ANY device with a browser (phone, laptop, "
-        "etc.), enter the code, and sign in with your PERSONAL Microsoft "
-        "account. This terminal will wait and continue automatically."
-    )
-    print("=" * 70 + "\n")
-    sys.stdout.flush()
-
-    result = app.acquire_token_by_device_flow(flow)  # blocks until login or timeout
-
-    if "access_token" not in result:
-        raise AuthConfigError(
-            "Device code login failed: "
-            f"{result.get('error')}: {result.get('error_description')}"
-        )
-
-    _save_cache(cache)
-    print(f"Login successful. Token cache saved to: {get_token_cache_path()}")
-    return result
-
-
-def get_access_token(*, force_refresh: bool = False) -> str:
-    """Silently acquire (and transparently refresh) an access token.
-
-    Raises AuthConfigError with a human-readable message if there is no
-    usable cached account / refresh token, instructing the caller to run the
-    one-time setup command again.
-    """
-    validate_runtime_config()
-    with _cache_transaction():
-        return _get_access_token(force_refresh=force_refresh)
-
-
-def _get_access_token(*, force_refresh: bool) -> str:
-    cache = _load_cache()
-    app = build_app(cache)
-    accounts = app.get_accounts()
-    if not accounts:
-        raise AuthConfigError(
-            "No signed-in account found in the token cache. Run `onedrive-mcp-setup` "
-            "(or `python scripts/setup_auth.py` from a source checkout) once "
-            "to sign in via device code."
-        )
-
-    result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=force_refresh)
-    _save_cache(cache)
-
-    if not result or "access_token" not in result:
-        raise AuthConfigError(
-            "Could not silently refresh the Microsoft Graph access token "
-            "(it may have been revoked or expired beyond refresh). Re-run "
-            "`onedrive-mcp-setup` (or `python scripts/setup_auth.py` from a "
-            "source checkout) to sign in again."
-        )
-
-    return result["access_token"]
+        return result["access_token"]

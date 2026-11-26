@@ -17,17 +17,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from auth import AuthConfigError  # noqa: E402
+from auth import TokenSource  # noqa: E402
 import graph_client  # noqa: E402
+from settings import ConfigError, load_settings  # noqa: E402
 
 
 def main() -> int:
     print("=== OneDrive MCP smoke test (real Graph API calls) ===\n")
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        print(f"\nFAILED — configuration error: {exc}", file=sys.stderr)
+        return 1
+    client = graph_client.OneDriveClient(settings, TokenSource(settings))
 
     print("1) get_drive_info() ...")
     try:
-        info = graph_client.get_drive_info()
-    except AuthConfigError as exc:
+        info = client.get_drive_info()
+    except ConfigError as exc:
         print(f"\nFAILED — auth not set up: {exc}", file=sys.stderr)
         print("Run: python scripts/setup_auth.py", file=sys.stderr)
         return 1
@@ -38,7 +45,7 @@ def main() -> int:
 
     print("\n2) list_folder('/') ...")
     try:
-        listing = graph_client.list_folder("/", top=10)
+        listing = client.list_folder("/", top=10)
     except graph_client.GraphError as exc:
         print(f"\nFAILED — Graph error: {exc}", file=sys.stderr)
         return 1

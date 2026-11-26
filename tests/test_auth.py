@@ -1,259 +1,191 @@
-"""Unit tests for auth.py configuration handling (no real MSAL network calls)."""
-import sys
+"""Unit tests for auth.TokenSource (no real MSAL network calls)."""
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import pytest
+import requests
 
 import auth
+from auth import TokenSource
+from settings import ConfigError
+from settings import load_settings as _load
 
 
-@pytest.fixture(autouse=True)
-def isolated_cache(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOKEN_CACHE_PATH", str(tmp_path / "cache.bin"))
+def load_settings(environ):
+    return _load(environ, project_root=Path("/nonexistent-checkout"))
+
+ROOT = Path(__file__).resolve().parent.parent
+GUID = "11111111-1111-1111-1111-111111111111"
 
 
-def test_get_client_id_raises_when_placeholder(monkeypatch):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "00000000-0000-0000-0000-000000000000")
-    with pytest.raises(auth.AuthConfigError):
-        auth.get_client_id()
+def make_env(tmp_path, **extra):
+    env = {
+        "ONEDRIVE_MCP_CONFIG_DIR": str(tmp_path / "config"),
+        "ONEDRIVE_MCP_DATA_DIR": str(tmp_path / "data"),
+        "TOKEN_CACHE_PATH": str(tmp_path / "cache.bin"),
+        "AZURE_CLIENT_ID": GUID,
+    }
+    env.update(extra)
+    return env
 
 
-def test_get_client_id_raises_when_empty(monkeypatch):
-    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
-    with pytest.raises(auth.AuthConfigError):
-        auth.get_client_id()
+@pytest.fixture
+def settings(tmp_path):
+    return load_settings(make_env(tmp_path))
 
 
-def test_get_client_id_returns_real_value(monkeypatch):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-1111-1111-1111-111111111111")
-    assert auth.get_client_id() == "11111111-1111-1111-1111-111111111111"
+def source_with_app(settings, app=None, **kwargs):
+    return TokenSource(settings, app_factory=lambda cache: app, **kwargs)
 
 
-def test_server_main_validates_runtime_config_before_start(monkeypatch):
-    import server
-
-    validator = Mock()
-    monkeypatch.setattr(server, "validate_runtime_config", validator)
-    run = Mock()
-    monkeypatch.setattr(server.mcp, "run", run)
-
-    server.main()
-    validator.assert_called_once_with()
-    run.assert_called_once_with(transport="stdio")
-
-
-def test_setup_main_validates_runtime_config_before_start(monkeypatch):
-    import onedrive_mcp_setup
-
-    validator = Mock()
-    monkeypatch.setattr(onedrive_mcp_setup, "validate_runtime_config", validator)
-    run = Mock(return_value={"scope": "Files.Read"})
-    monkeypatch.setattr(onedrive_mcp_setup, "run_device_code_flow", run)
-
-    assert onedrive_mcp_setup.main() == 0
-    validator.assert_called_once_with()
-    run.assert_called_once_with()
-
-
-def test_validate_runtime_config_rejects_invalid_client_id(monkeypatch):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "bad/id")
-    with pytest.raises(auth.AuthConfigError, match="invalid characters"):
-        auth.validate_runtime_config()
-
-
-def test_validate_runtime_config_rejects_invalid_tenant(monkeypatch):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-1111-1111-1111-111111111111")
-    monkeypatch.setenv("AZURE_TENANT_ID", "bad?tenant")
-    with pytest.raises(auth.AuthConfigError, match="invalid characters"):
-        auth.validate_runtime_config()
-
-
-def test_validate_runtime_config_rejects_same_cache_and_download_paths(monkeypatch, tmp_path):
-    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-1111-1111-1111-111111111111")
-    target = tmp_path / "same" 
-    monkeypatch.setenv("TOKEN_CACHE_PATH", str(target))
-    monkeypatch.setenv("DOWNLOAD_DIR", str(target))
-    with pytest.raises(auth.AuthConfigError, match="must not resolve to the same location"):
-        auth.validate_runtime_config()
-
-
-def test_get_tenant_id_defaults_to_consumers(monkeypatch):
-    monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
-    assert auth.get_tenant_id() == "consumers"
-
-
-def test_get_tenant_id_respects_env(monkeypatch):
-    monkeypatch.setenv("AZURE_TENANT_ID", "common")
-    assert auth.get_tenant_id() == "common"
-
-
-def test_get_authority_uses_tenant(monkeypatch):
-    monkeypatch.setenv("AZURE_TENANT_ID", "consumers")
-    assert auth.get_authority() == "https://login.microsoftonline.com/consumers"
-
-
-def test_get_token_cache_path_expands(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOKEN_CACHE_PATH", str(tmp_path / "cache.bin"))
-    assert auth.get_token_cache_path() == (tmp_path / "cache.bin").resolve()
-
-
-def test_relative_cache_path_is_independent_of_cwd(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", False)
-    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "app-data"))
-    monkeypatch.setenv("TOKEN_CACHE_PATH", "state/cache.bin")
-    assert auth.get_token_cache_path() == (tmp_path / "app-data" / "state" / "cache.bin").resolve()
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux XDG data-directory behavior")
-def test_default_user_data_directory_honors_xdg(monkeypatch, tmp_path):
-    monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
-    assert auth.get_user_data_dir() == (tmp_path / "xdg-data" / "onedrive-mcp").resolve()
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux XDG data-directory behavior")
-def test_empty_xdg_value_falls_back_to_home(monkeypatch):
-    monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
-    monkeypatch.setenv("XDG_DATA_HOME", "")
-    assert auth.get_user_data_dir() == (Path.home() / ".local" / "share" / "onedrive-mcp").resolve()
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows user-data directory behavior")
-def test_default_user_data_directory_uses_local_appdata(monkeypatch, tmp_path):
-    monkeypatch.delenv("ONEDRIVE_MCP_DATA_DIR", raising=False)
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
-    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming-app-data"))
-    assert auth.get_user_data_dir() == (tmp_path / "local-app-data" / "onedrive-mcp").resolve()
-
-
-def test_default_cache_and_download_paths_use_user_data_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", False)
-    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "app-data"))
-    monkeypatch.delenv("TOKEN_CACHE_PATH", raising=False)
-    monkeypatch.delenv("DOWNLOAD_DIR", raising=False)
-    assert auth.get_token_cache_path() == (tmp_path / "app-data" / "token_cache.bin").resolve()
-    assert auth.get_download_dir() == (tmp_path / "app-data" / "downloads").resolve()
-
-
-def test_legacy_checkout_env_keeps_relative_cache_location(monkeypatch, tmp_path):
-    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", True)
-    monkeypatch.setenv("TOKEN_CACHE_PATH", "token_cache.bin")
-    assert auth.get_token_cache_path() == (auth.PROJECT_ROOT / "token_cache.bin").resolve()
+def test_missing_client_id_is_friendly(tmp_path):
+    env = make_env(tmp_path)
+    del env["AZURE_CLIENT_ID"]
+    source = TokenSource(load_settings(env))
+    with pytest.raises(ConfigError, match="AZURE_CLIENT_ID"):
+        source.access_token()
+    with pytest.raises(ConfigError, match="AZURE_CLIENT_ID"):
+        source.sign_in_device_code()
+    assert not (tmp_path / "data").exists()
 
 
 @pytest.mark.parametrize("force_refresh", [False, True])
-def test_silent_refresh_passes_force_flag(monkeypatch, force_refresh):
+def test_silent_refresh_passes_force_flag(settings, force_refresh):
     app = Mock()
     app.get_accounts.return_value = [{"username": "test"}]
     app.acquire_token_silent.return_value = {"access_token": "dummy-token"}
-    monkeypatch.setattr(auth, "build_app", Mock(return_value=app))
-    assert auth.get_access_token(force_refresh=force_refresh) == "dummy-token"
+    assert source_with_app(settings, app).access_token(force_refresh=force_refresh) == "dummy-token"
     app.acquire_token_silent.assert_called_once_with(
         auth.SCOPES, account={"username": "test"}, force_refresh=force_refresh,
     )
 
 
-def test_missing_account_is_actionable(monkeypatch):
+def test_missing_account_is_actionable(settings):
     app = Mock()
     app.get_accounts.return_value = []
-    monkeypatch.setattr(auth, "build_app", Mock(return_value=app))
-    with pytest.raises(auth.AuthConfigError, match="onedrive-mcp-setup"):
-        auth.get_access_token()
+    with pytest.raises(ConfigError, match="onedrive-mcp-setup"):
+        source_with_app(settings, app).access_token()
 
 
-def test_corrupt_cache_is_sanitized():
-    auth.get_token_cache_path().write_text("secret-corrupt-input", encoding="utf-8")
-    with pytest.raises(auth.AuthConfigError) as failure:
-        auth.get_access_token()
+def test_failed_silent_refresh_is_actionable(settings):
+    app = Mock()
+    app.get_accounts.return_value = [{"username": "t"}]
+    app.acquire_token_silent.return_value = None
+    with pytest.raises(ConfigError, match="sign in again"):
+        source_with_app(settings, app).access_token()
+
+
+def test_device_code_sign_in_returns_result(settings, capsys):
+    app = Mock()
+    app.initiate_device_flow.return_value = {"user_code": "ABC", "message": "go sign in"}
+    app.acquire_token_by_device_flow.return_value = {"access_token": "t", "scope": "Files.Read"}
+    result = source_with_app(settings, app).sign_in_device_code()
+    assert result["scope"] == "Files.Read"
+    assert "go sign in" in capsys.readouterr().out
+
+
+def test_device_code_failure_is_config_error(settings):
+    app = Mock()
+    app.initiate_device_flow.return_value = {"user_code": "ABC", "message": "m"}
+    app.acquire_token_by_device_flow.return_value = {"error": "denied", "error_description": "no"}
+    with pytest.raises(ConfigError, match="Device code login failed"):
+        source_with_app(settings, app).sign_in_device_code()
+
+
+def test_corrupt_cache_is_sanitized(settings):
+    settings.token_cache_path.write_text("secret-corrupt-input", encoding="utf-8")
+    with pytest.raises(ConfigError) as failure:
+        TokenSource(settings).access_token()
     assert "secret-corrupt-input" not in str(failure.value)
     assert "cache" in str(failure.value)
 
 
-def test_serialization_failure_preserves_cache():
-    path = auth.get_token_cache_path()
+def test_serialization_failure_preserves_cache(settings):
+    path = settings.token_cache_path
     path.write_text("old-state", encoding="utf-8")
     cache = Mock(has_state_changed=True)
     cache.serialize.side_effect = ValueError("serialization failure")
     with pytest.raises(ValueError):
-        auth._save_cache(cache)
+        TokenSource(settings)._save_cache(cache)
     assert path.read_text() == "old-state"
     assert not list(path.parent.glob(".token-cache-*"))
 
 
-def test_replace_failure_preserves_cache_and_cleans_temporary(monkeypatch):
-    path = auth.get_token_cache_path()
+def test_replace_failure_preserves_cache_and_cleans_temporary(monkeypatch, settings):
+    path = settings.token_cache_path
     path.write_text("old-state", encoding="utf-8")
     cache = Mock(has_state_changed=True)
     cache.serialize.return_value = "new-state"
-    monkeypatch.setattr(auth.os, "replace", Mock(side_effect=OSError("disk failure")))
+    monkeypatch.setattr(os, "replace", Mock(side_effect=OSError("disk failure")))
     with pytest.raises(OSError):
-        auth._save_cache(cache)
+        TokenSource(settings)._save_cache(cache)
     assert path.read_text() == "old-state"
     assert not list(path.parent.glob(".token-cache-*"))
 
 
-def test_flush_failure_preserves_cache(monkeypatch):
-    path = auth.get_token_cache_path()
+def test_flush_failure_preserves_cache(monkeypatch, settings):
+    path = settings.token_cache_path
     path.write_text("old-state", encoding="utf-8")
     cache = Mock(has_state_changed=True)
     cache.serialize.return_value = "new-state"
-    monkeypatch.setattr(auth.os, "fsync", Mock(side_effect=OSError("disk full")))
+    monkeypatch.setattr(os, "fsync", Mock(side_effect=OSError("disk full")))
     with pytest.raises(OSError):
-        auth._save_cache(cache)
+        TokenSource(settings)._save_cache(cache)
     assert path.read_text() == "old-state"
     assert not list(path.parent.glob(".token-cache-*"))
 
 
-def test_cache_lock_timeout_is_actionable(monkeypatch):
-    from filelock import Timeout
-    monkeypatch.setattr(auth, "FileLock", Mock(side_effect=Timeout("dummy-lock")))
-    with pytest.raises(auth.AuthConfigError, match="busy"):
-        auth.get_access_token()
+def test_cache_lock_timeout_is_actionable(settings):
+    from filelock import FileLock
+    settings.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(settings.token_cache_path) + ".lock"):
+        with pytest.raises(ConfigError, match="busy"):
+            TokenSource(settings, lock_timeout=0.1).access_token()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem mode guarantee")
-def test_default_data_directory_is_owner_only(monkeypatch, tmp_path):
-    data_dir = tmp_path / "private-data"
-    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(data_dir))
-    monkeypatch.delenv("TOKEN_CACHE_PATH", raising=False)
-    with auth._cache_transaction():
+def test_default_data_directory_is_owner_only(tmp_path):
+    env = make_env(tmp_path)
+    del env["TOKEN_CACHE_PATH"]
+    s = load_settings(env)
+    with TokenSource(s)._cache_transaction():
         pass
-    assert data_dir.stat().st_mode & 0o777 == 0o700
+    assert s.data_dir.stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem mode guarantee")
-def test_atomic_cache_created_owner_only_even_when_old_file_is_public():
-    path = auth.get_token_cache_path()
+def test_atomic_cache_created_owner_only_even_when_old_file_is_public(settings):
+    path = settings.token_cache_path
     path.write_text("old-state", encoding="utf-8")
     path.chmod(0o644)
     cache = Mock(has_state_changed=True)
     cache.serialize.return_value = "{}"
-    auth._save_cache(cache)
+    TokenSource(settings)._save_cache(cache)
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_cache_transactions_serialize_across_processes():
+def test_cache_transactions_serialize_across_processes(tmp_path, settings):
     script = """
-import json
-import auth
+import json, os
+from auth import TokenSource
+from settings import load_settings
+source = TokenSource(load_settings())
 for _ in range(10):
-    with auth._cache_transaction():
-        cache = auth._load_cache()
+    with source._cache_transaction():
+        cache = source._load_cache()
         state = json.loads(cache.serialize())
         state['test_counter'] = state.get('test_counter', 0) + 1
         cache.deserialize(json.dumps(state))
         cache.has_state_changed = True
-        auth._save_cache(cache)
+        source._save_cache(cache)
 """
+    env = {**os.environ, **make_env(tmp_path), "PYTHONPATH": str(ROOT)}
     processes = [
-        subprocess.Popen([sys.executable, "-c", script], cwd=auth.PROJECT_ROOT,
+        subprocess.Popen([sys.executable, "-c", script], cwd=ROOT, env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         for _ in range(2)
     ]
@@ -266,35 +198,36 @@ for _ in range(10):
             if process.poll() is None:
                 process.kill()
                 process.wait()
-    assert json.loads(auth.get_token_cache_path().read_text())["test_counter"] == 20
+    assert json.loads(settings.token_cache_path.read_text())["test_counter"] == 20
 
 
-def test_user_config_is_loaded_from_arbitrary_cwd(tmp_path):
+def test_user_config_is_loaded_by_entry_point_from_arbitrary_cwd(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir(mode=0o700)
-    (config_dir / ".env").write_text("AZURE_CLIENT_ID=11111111-1111-1111-1111-111111111111\n", encoding="utf-8")
+    (config_dir / ".env").write_text(f"AZURE_CLIENT_ID={GUID}\n", encoding="utf-8")
     env = os.environ.copy()
     env.pop("AZURE_CLIENT_ID", None)
     env["ONEDRIVE_MCP_CONFIG_DIR"] = str(config_dir)
-    env["PYTHONPATH"] = str(auth.PROJECT_ROOT)
+    env["PYTHONPATH"] = str(ROOT)
     result = subprocess.run(
-        [sys.executable, "-c", "import auth; print(auth.get_client_id())"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=10,
+        [sys.executable, "-c", "from settings import load_settings; print(load_settings().client_id)"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=True, timeout=10,
     )
-    assert result.stdout.strip() == "11111111-1111-1111-1111-111111111111"
+    assert result.stdout.strip() == GUID
     if os.name == "posix":
         assert (config_dir / ".env").stat().st_mode & 0o777 == 0o600
 
 
-def test_auth_transport_errors_are_sanitized(monkeypatch):
-    import requests
-    monkeypatch.setattr(auth, "build_app", Mock(side_effect=requests.ConnectionError("SECRET")))
-    with pytest.raises(auth.AuthConfigError) as failure:
-        auth.get_access_token()
+def test_importing_modules_does_not_read_env_or_warn():
+    script = "import os; os.environ['AZURE_CLIENT_ID']='bad/id'; import auth, graph_client, server, settings"
+    result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+def test_auth_transport_errors_are_sanitized(settings):
+    def factory(cache):
+        raise requests.ConnectionError("SECRET")
+    with pytest.raises(ConfigError) as failure:
+        TokenSource(settings, app_factory=factory).access_token()
     assert "SECRET" not in str(failure.value)
     assert "connection failed" in str(failure.value)

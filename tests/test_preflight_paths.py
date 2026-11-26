@@ -3,11 +3,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import Mock
-
 import pytest
 
-import auth
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.mark.parametrize("entry", ["server", "onedrive_mcp_setup"])
@@ -36,7 +34,7 @@ def test_entry_point_sanitizes_symlink_loops(tmp_path, entry, setting):
         "AZURE_TENANT_ID": "consumers",
         "MAX_DOWNLOAD_BYTES": "100",
         "MAX_DOWNLOAD_DIR_BYTES": "1000",
-        "PYTHONPATH": str(auth.PROJECT_ROOT),
+        "PYTHONPATH": str(ROOT),
     })
     if setting == ".env":
         env_file.unlink()
@@ -69,37 +67,3 @@ raise SystemExit(importlib.import_module({entry!r}).main())
         assert result.stdout == ""
     assert not data.exists()  # No cache directory, cache, lock, or download writes.
     assert private_path.is_symlink()
-
-
-@pytest.mark.parametrize("operation,error", [
-    ("resolve", RuntimeError("PRIVATE-PATH-MARKER")),
-    ("stat", PermissionError("PRIVATE-PATH-MARKER")),
-])
-def test_path_failures_are_sanitized(monkeypatch, tmp_path, operation, error):
-    monkeypatch.setenv("TOKEN_CACHE_PATH", str(tmp_path / "cache.bin"))
-    monkeypatch.setattr(Path, operation, Mock(side_effect=error))
-    with pytest.raises(auth.AuthConfigError, match="TOKEN_CACHE_PATH") as failure:
-        auth._validate_path_setting("TOKEN_CACHE_PATH", is_directory=False)
-    assert "PRIVATE-PATH-MARKER" not in str(failure.value)
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_preflight_preserves_relative_data_paths(monkeypatch, tmp_path, legacy):
-    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", legacy)
-    monkeypatch.setattr(auth, "PROJECT_ROOT", tmp_path / "checkout")
-    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("TOKEN_CACHE_PATH", "state/cache.bin")
-    monkeypatch.setenv("DOWNLOAD_DIR", "downloads")
-    base = tmp_path / ("checkout" if legacy else "data")
-    assert auth._validate_path_setting("TOKEN_CACHE_PATH", is_directory=False) == base / "state/cache.bin"
-    assert auth._validate_path_setting("DOWNLOAD_DIR", is_directory=True) == base / "downloads"
-    assert not base.exists()
-
-
-def test_wrong_path_type_does_not_echo_value(monkeypatch, tmp_path):
-    private_path = tmp_path / "PRIVATE-PATH-MARKER"
-    private_path.write_text("synthetic")
-    monkeypatch.setenv("DOWNLOAD_DIR", str(private_path))
-    with pytest.raises(auth.AuthConfigError, match="DOWNLOAD_DIR must point to a directory") as failure:
-        auth._validate_path_setting("DOWNLOAD_DIR", is_directory=True)
-    assert "PRIVATE-PATH-MARKER" not in str(failure.value)
