@@ -9,9 +9,8 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-import auth
-import graph_client
 import server
+from tests.fakes import make_client
 
 
 def test_stdio_handshake_and_schema_from_arbitrary_cwd(tmp_path):
@@ -44,7 +43,8 @@ def test_stdio_handshake_and_schema_from_arbitrary_cwd(tmp_path):
                     }
                     for name in ("search_onedrive", "list_folder"):
                         properties = tools[name].inputSchema["properties"]
-                        assert "next_link" in properties
+                        assert "continuation" in properties
+                        assert "next_link" not in properties
                         assert properties["top"]["minimum"] == 1
                         assert properties["top"]["maximum"] == 200
                     invalid = await session.call_tool("list_folder", {"top": 201})
@@ -56,13 +56,13 @@ def test_stdio_handshake_and_schema_from_arbitrary_cwd(tmp_path):
 @pytest.mark.parametrize("fallback,stream_failure", [(False, False), (True, False), (False, True), (True, True)])
 def test_signed_url_never_appears_in_stdio_response(tmp_path, fallback, stream_failure):
     script = f"""
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 import requests
-import graph_client
 import server
 from pathlib import Path
-graph_client.get_access_token = lambda **kwargs: 'dummy'
-graph_client._get_json = lambda *args, **kwargs: {{
+from tests.fakes import make_client
+client = make_client(Path({str(tmp_path)!r}))
+client._get_json = lambda *args, **kwargs: {{
     'name': 'test.txt', 'size': 2,
     '@microsoft.graph.downloadUrl': {None if fallback else 'https://cdn.example/file?sig=SECRET'!r},
 }}
@@ -76,14 +76,14 @@ def failing_get(*args, **kwargs):
         raise failure
     response.iter_content.side_effect = chunks
     return response
-graph_client.requests.get = failing_get
-server._download_dir = lambda: Path({str(tmp_path)!r})
-server.mcp.run(transport='stdio')
+requests.get = failing_get
+server.build_server(client).run(transport='stdio')
 """
     async def check():
         parameters = StdioServerParameters(
             command=sys.executable, args=["-c", script],
             cwd=str(Path(server.__file__).resolve().parent),
+            env={"PYTHONPATH": str(Path(server.__file__).resolve().parent)},
         )
         with anyio.fail_after(30):
             async with stdio_client(parameters) as (reader, writer):
@@ -99,20 +99,43 @@ server.mcp.run(transport='stdio')
     assert not list(tmp_path.glob(".onedrive-part-*"))
 
 
-def test_search_preserves_fields_and_exposes_pagination(monkeypatch):
-    monkeypatch.setattr(graph_client, "search_items", Mock(return_value={
-        "items": [{"name": "a"}], "next_link": "next", "has_more": True,
-    }))
-    result = server.search_onedrive("a")
+def tools_for(client):
+    return {tool.name: tool.fn for tool in server.build_server(client)._tool_manager.list_tools()}
+
+
+def test_search_preserves_fields_and_exposes_pagination(tmp_path):
+    client = make_client(tmp_path)
+    client.search_items = Mock(return_value={
+        "items": [{"name": "a"}], "continuation": "next", "has_more": True,
+    })
+    result = tools_for(client)["search_onedrive"]("a")
     assert result == {
         "query": "a", "count": 1, "items": [{"name": "a"}],
-        "next_link": "next", "has_more": True,
+        "continuation": "next", "has_more": True,
     }
+    client.search_items.assert_called_once_with("a", top=20, continuation=None)
 
 
-def test_download_dir_is_independent_of_cwd(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(auth, "_LEGACY_ENV_IN_USE", False)
-    monkeypatch.setenv("ONEDRIVE_MCP_DATA_DIR", str(tmp_path / "app-data"))
-    monkeypatch.setenv("DOWNLOAD_DIR", "downloads")
-    assert server._download_dir() == (tmp_path / "app-data" / "downloads").resolve()
+def test_graph_and_config_errors_become_error_dicts(tmp_path):
+    from graph_client import GraphError
+    from settings import ConfigError
+    client = make_client(tmp_path)
+    client.get_drive_info = Mock(side_effect=GraphError("boom"))
+    assert tools_for(client)["get_drive_info"]() == {"error": "boom"}
+    client.get_drive_info = Mock(side_effect=ConfigError("AZURE_CLIENT_ID missing"))
+    assert tools_for(client)["get_drive_info"]() == {"error": "AZURE_CLIENT_ID missing"}
+
+
+def test_tools_without_client_return_friendly_error():
+    tools = tools_for(None)
+    assert set(tools) == {"search_onedrive", "list_folder", "get_item_metadata",
+                          "download_file", "get_drive_info"}
+    assert "not configured" in tools["get_drive_info"]()["error"]
+    assert "error" in tools["list_folder"]()
+
+
+def test_download_uses_settings_download_dir(tmp_path):
+    client = make_client(tmp_path)
+    client.download_file = Mock(return_value={"local_path": "x"})
+    assert tools_for(client)["download_file"]("/a.txt", "b.txt") == {"local_path": "x"}
+    client.download_file.assert_called_once_with("/a.txt", "b.txt")

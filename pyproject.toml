@@ -45,4 +45,4 @@ onedrive-mcp = "server:main"
 onedrive-mcp-setup = "onedrive_mcp_setup:main"
 
 [tool.setuptools]
-py-modules = ["auth", "graph_client", "server", "onedrive_mcp_setup"]
+py-modules = ["auth", "graph_client", "settings", "server", "onedrive_mcp_setup"]

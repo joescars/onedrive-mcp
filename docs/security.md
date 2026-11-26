@@ -93,7 +93,7 @@ responses. Transport failures return sanitized messages.
 ## Pagination
 
 Search and folder listings accept page sizes from 1 to 200. When `has_more` is
-true, pass the opaque `next_link` to the same tool with the original query or
+true, pass the opaque `continuation` to the same tool with the original query or
 path and page size.
 
 Continuations are signed, bound to their original endpoint and page size, and

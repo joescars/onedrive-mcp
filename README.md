@@ -94,8 +94,8 @@ The server provides these five MCP tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `search_onedrive(query, top=20, next_link=None)` | Search by file name or indexed content, one page at a time. |
-| `list_folder(path='/', top=50, next_link=None)` | List a folder's children with bounded pagination. |
+| `search_onedrive(query, top=20, continuation=None)` | Search by file name or indexed content, one page at a time. |
+| `list_folder(path='/', top=50, continuation=None)` | List a folder's children with bounded pagination. |
 | `get_item_metadata(path_or_id)` | Inspect metadata for a file or folder. |
 | `download_file(path_or_id, dest_filename=None)` | Download a file into the local download directory without overwriting an existing file. |
 | `get_drive_info()` | Read drive, owner, and quota information. |
