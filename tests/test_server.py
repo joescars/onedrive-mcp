@@ -10,7 +10,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 import server
-from tests.fakes import FakeTokenSource, make_client
+from tests.fakes import make_client
 
 
 def test_stdio_handshake_and_schema_from_arbitrary_cwd(tmp_path):

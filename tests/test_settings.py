@@ -1,6 +1,5 @@
 """Unit tests for settings.py: all configuration parsing, no network."""
 import dataclasses
-import logging
 import os
 import sys
 from pathlib import Path
